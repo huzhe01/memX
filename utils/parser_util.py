@@ -67,6 +67,9 @@ def get_args():
     parser.add_argument('--generation_layers', nargs="?", type=int, default=4)
     parser.add_argument('--is_generation_for_classifier', nargs="?", type=int, default=0)
 
+    parser.add_argument('--output_root', nargs="?", type=str, default="")
+    parser.add_argument('--data_root', nargs="?", type=str, default="")
+
     args = parser.parse_args()
     batch_size = args.batch_size
     num_gpus = args.num_of_gpus

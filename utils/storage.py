@@ -26,10 +26,10 @@ def load_statistics(log_path, log_name="experiment_log"):
                 data_dict[key].append(item)
     return data_dict
 
-def build_experiment_folder(experiment_name):
-    saved_models_filepath = "/model/huzhe/F2GAN/{}/{}".format(experiment_name.replace("_", "/"), "saved_models")
-    logs_filepath = "/model/huzhe/F2GAN/{}/{}".format(experiment_name.replace("_", "/"), "logs/")
-    samples_filepath = "/model/huzhe/F2GAN/{}/{}".format(experiment_name.replace("_", "/"), "visual_outputs/")
+def build_experiment_folder(experiment_name,output_root):
+    saved_models_filepath = output_root+"/{}/{}".format(experiment_name.replace("_", "/"), "saved_models")
+    logs_filepath = output_root+"/{}/{}".format(experiment_name.replace("_", "/"), "logs/")
+    samples_filepath = output_root+"/{}/{}".format(experiment_name.replace("_", "/"), "visual_outputs/")
 
     import os
     if not os.path.exists(experiment_name.replace("_", "/")):

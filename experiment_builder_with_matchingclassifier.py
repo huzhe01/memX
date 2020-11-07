@@ -1,5 +1,3 @@
-import sys
-sys.path.insert(0, '/home/zhehu/Memory-GAN')
 import utils.interpolations as interpolations
 import numpy as np
 import tqdm
@@ -20,7 +18,8 @@ class ExperimentBuilder(object):
         tf.reset_default_graph()
         self.continue_from_epoch = args.continue_from_epoch
         self.experiment_name = args.experiment_title
-        self.saved_models_filepath, self.log_path, self.save_image_path = build_experiment_folder(self.experiment_name)
+        self.output_root=args.output_root
+        self.saved_models_filepath, self.log_path, self.save_image_path = build_experiment_folder(self.experiment_name,self.output_root)
         self.num_gpus = args.num_of_gpus
         self.batch_size = args.batch_size
         # self.support_number = args.support_number
@@ -151,11 +150,10 @@ class ExperimentBuilder(object):
                       loss_CLA=self.loss_CLA, loss_FSL=self.loss_FSL, loss_sim=self.loss_sim,
                       z1z2_training=self.z1z2_training)
         time_2 = time.time()
-        # print('time for constructing graph:',time_2 - time_1)
+        print('time for constructing graph:',time_2 - time_1)
 
         self.summary, self.losses, self.graph_ops = dagan.init_train()
-        # print('time for initializing graph:',time.time() - time_2)
-
+        print('time for initializing graph:',time.time() - time_2)
         # generated image with z and conditional information
         self.same_images = dagan.sample_same_images()
 
@@ -260,7 +258,7 @@ class ExperimentBuilder(object):
                 self.is_z2_vae, self.is_z2, self.loss_G, self.loss_D, self.loss_KL, self.loss_CLA, self.loss_FSL,
                 self.loss_recons_B, self.loss_matching_G, self.loss_matching_D, self.loss_sim, self.batch_size,
                 self.z_dim, self.image_width)
-
+            import pdb;pdb.set_trace()
             if int(self.continue_from_epoch) > 900:
                 print('sampling')
                 # print('starting sampling')
@@ -299,11 +297,6 @@ class ExperimentBuilder(object):
                                                            number_support=self.support_number,
                                                            z_input=self.z_input,
                                                            z_input_2=self.z_input_2,
-                                                           # selected_global_x_j = self.input_x_j_selected,
-                                                           # selected_global_y_j=self.input_global_y_j_selected,
-
-                                                           # conditional_inputs=x_test_i,
-                                                           # y_input_i = y_test_i,
                                                            conditional_inputs=x_test_j_selected,
                                                            y_input_i=y_test_j_selected,
 
@@ -314,8 +307,6 @@ class ExperimentBuilder(object):
                                                            classes_number=self.data.training_classes,
                                                            selected_classes=self.data.selected_classes,
                                                            support_number=self.data.support_number,
-                                                           # input_global_x_j_selected = x_test_j_selected,
-                                                           # input_global_y_j_selected = y_global_test_j_selected,
                                                            z_vectors=self.z_vectors,
                                                            z_vectors_2=self.z_vectors_2,
                                                            data=self.data,
@@ -357,7 +348,7 @@ class ExperimentBuilder(object):
                     # np.savetxt(self.save_image_path +'sim.txt', similarities_list2, delimiter='\t', newline='\r\n')
 
             with tqdm.tqdm(total=self.total_epochs - start_from_epoch) as pbar_e:
-                for e in range(start_from_epoch, self.total_epochs):
+                for e in range(start_from_epoch, self.total_epochs): #self.total_epochs=600
                     train_g_loss = []
                     val_g_loss = []
                     train_d_loss = []
@@ -369,8 +360,9 @@ class ExperimentBuilder(object):
                     val_fzl_classification_loss = []
 
                     ### total trianing batches
+                    # 一个epoch生成有9015个batch的training data
                     with tqdm.tqdm(total=self.total_train_batches) as pbar_train:
-                        for iter in range(self.total_train_batches):
+                        for iter in range(self.total_train_batches): #self.total_train_batches=9015
                             # before_classification = time.time()
                             for z1z2training in range(self.strategy):
                                 if z1z2training == 0:
@@ -378,201 +370,124 @@ class ExperimentBuilder(object):
                                 else:
                                     z1z2_training = False
 
-                                if z1z2training < -1:
-                                    for n in range(self.gen_iter):
-                                        x_train_i_selected_classes, x_train_j, y_train_i_selected_classes, y_train_j, y_global_train_i_selected_classes, y_global_train_j = self.data.get_train_batch()
-                                        # print('time for constructing batch:',time.time() - time_6)
-                                        x_val_i_selected_classes, x_valid_j, y_valid_i_selected_classes, y_valid_j, y_global_val_i_selected_classes, y_global_val_j = self.data.get_val_batch()
-                                        for i in range(1):
-                                            x_train_i = x_train_i_selected_classes[:, :, i, :, :, :]
-                                            y_train_i = y_train_i_selected_classes[:, :, i, :]
-                                            y_global_train_i = y_global_train_i_selected_classes[:, :, i, :]
+                    
+                                #### data preparation
+                                x_train_i_selected_classes, x_train_j, y_train_i_selected_classes, y_train_j, y_global_train_i_selected_classes, y_global_train_j = self.data.get_train_batch()
+                                x_val_i_selected_classes, x_valid_j, y_valid_i_selected_classes, y_valid_j, y_global_val_i_selected_classes, y_global_val_j = self.data.get_val_batch()
+                                for i in range(1):
+                                    x_train_i = x_train_i_selected_classes[:, :, i, :, :, :] #(1, 20, 96, 96, 3)
+                                    y_train_i = y_train_i_selected_classes[:, :, i, :] #(1, 20, 1)
+                                    y_global_train_i = y_global_train_i_selected_classes[:, :, i, :] #(1, 20, 1803)
 
-                                            x_valid_i = x_val_i_selected_classes[:, :, i, :, :, :]
-                                            y_valid_i = y_valid_i_selected_classes[:, :, i, :]
-                                            y_global_val_i = y_global_val_i_selected_classes[:, :, i, :]
+                                    x_valid_i = x_val_i_selected_classes[:, :, i, :, :, :] 
+                                    # (1, 20, 96, 96, 3)
+                                    y_valid_i = y_valid_i_selected_classes[:, :, i, :]
+                                    # (1, 20, 1)
+                                    y_global_val_i = y_global_val_i_selected_classes[:, :, i, :]
+                                    # (1, 20, 1803)
+                                    support_index = int(np.random.choice(self.data.support_number, size=1))
+                                    # 0
+                                    x_train_j_selected = x_train_j[:, :,self.data.support_number * i + support_index, :, :, :]
+                                    # (1, 20, 96, 96, 3)
+                                    y_train_j_selected = y_train_j[:, :, self.data.support_number * i + support_index, :]
+                                    # (1,20,1)
+                                    y_global_train_j_selected = y_global_train_j[:, :, self.data.support_number * i + support_index, :]
+                                    # (1, 20, 1803)
+                                    x_valid_j_selected = x_valid_j[:, :, self.data.support_number * i + support_index, :, :, :]
+                                    # (1, 20, 96, 96, 3)
+                                    y_global_val_j_selected = y_global_val_j[:, :, self.data.support_number * i + support_index, :]
+                                    # (1, 20, 1803)
+                                    y_valid_j_selected = y_valid_j[:, :, self.data.support_number * i + support_index, :]
+                                    # (1, 20, 1)
+                                    # 判别器loss更新
+                                    # for n in range(self.disc_iter): #self.disc_iter=1
+                                    #     _, d_train_loss_value = sess.run(
+                                    #         [self.graph_ops["d_opt_op"], self.losses["d_losses"]],
+                                    #         feed_dict={
+                                    #             self.input_x_i: x_train_i,
+                                    #             self.input_global_y_i: y_global_train_i,
+                                    #             self.input_x_j: x_train_j,
+                                    #             self.input_x_j_selected: x_train_j_selected,
+                                    #             self.input_global_y_j: y_global_train_j,
+                                    #             self.input_global_y_j_selected: y_global_train_j_selected,
+                                    #             self.selected_classes: self.data.selected_classes,
+                                    #             self.support_number: self.data.support_number,
+                                    #             self.classes: self.data.training_classes,
+                                    #             self.dropout_rate: self.dropout_rate_value,
+                                    #             self.training_phase: True, self.random_rotate: True,
+                                    #             self.z1z2_training: z1z2_training})
+                                    #     train_d_loss.append(d_train_loss_value)
 
-                                            support_index = int(np.random.choice(self.data.support_number, size=1))
-                                            x_train_j_selected = x_train_j[:, :,
-                                                                 self.data.support_number * i + support_index, :, :, :]
-                                            y_train_j_selected = y_train_j[:, :,
-                                                                 self.data.support_number * i + support_index, :]
-                                            y_global_train_j_selected = y_global_train_j[:, :,
-                                                                        self.data.support_number * i + support_index, :]
-                                            x_valid_j_selected = x_valid_j[:, :,
-                                                                 self.data.support_number * i + support_index, :, :, :]
-                                            y_global_val_j_selected = y_global_val_j[:, :,
-                                                                      self.data.support_number * i + support_index, :]
-                                            y_valid_j_selected = y_valid_j[:, :,
-                                                                 self.data.support_number * i + support_index, :]
+                                    #     if iter % 50 == 0:
+                                    #         # 每50代得到一个d_val_loss
+                                    #         d_val_loss_value = sess.run(
+                                    #             self.losses["d_losses"],
+                                    #             feed_dict={
+                                    #                 self.input_x_i: x_valid_i,
+                                    #                 self.input_global_y_i: y_global_val_i,
+                                    #                 self.input_x_j: x_valid_j,
+                                    #                 self.input_x_j_selected: x_valid_j_selected,
+                                    #                 self.input_global_y_j_selected: y_global_val_j_selected,
+                                    #                 self.input_global_y_j: y_global_val_j,
+                                    #                 self.selected_classes: self.data.selected_classes,
+                                    #                 self.support_number: self.data.support_number,
+                                    #                 self.classes: self.data.training_classes,
+                                    #                 self.dropout_rate: self.dropout_rate_value,
+                                    #                 self.training_phase: False, self.random_rotate: False,
+                                    #                 self.z1z2_training: z1z2_training})
+                                    #     val_d_loss.append(d_val_loss_value)
+                                    # # 生成器loss更新
+                                    # for n in range(self.gen_iter): #self.gen_iter=1
+                                    #     _, g_train_loss_value, train_summaries = sess.run(
+                                    #         [self.graph_ops["g_opt_op"], self.losses["g_losses"],
+                                    #             self.summary],
+                                    #         feed_dict={
+                                    #             self.input_x_i: x_train_i,
+                                    #             self.input_y_i: y_train_i,
+                                    #             self.input_global_y_i: y_global_train_i,
+                                    #             self.input_x_j: x_train_j,
+                                    #             self.input_x_j_selected: x_train_j_selected,
+                                    #             self.input_y_j: y_train_j,
+                                    #             self.input_y_j: y_train_j,
+                                    #             self.input_global_y_j: y_global_train_j,
+                                    #             self.input_global_y_j_selected: y_global_train_j_selected,
+                                    #             self.selected_classes: self.data.selected_classes,
+                                    #             self.support_number: self.data.support_number,
+                                    #             self.dropout_rate: self.dropout_rate_value,
+                                    #             self.training_phase: True, self.random_rotate: True,
+                                    #             self.z1z2_training: z1z2_training})
+                                    #     train_g_loss.append(g_train_loss_value)
+                                    #     if isNaN(g_train_loss_value):
+                                    #         raise ValueError
 
-                                            _, g_train_loss_value, train_summaries = sess.run(
-                                                [self.graph_ops["g_opt_op"], self.losses["g_losses"],
-                                                 self.summary],
-                                                feed_dict={
-                                                    self.input_x_i: x_train_i,
-                                                    self.input_y_i: y_train_i,
-                                                    self.input_global_y_i: y_global_train_i,
-                                                    # self.input_x_i: x_train_j_selected,
-                                                    # self.input_y_i: y_train_j_selected,
-                                                    # self.input_global_y_i: y_global_train_j_selected,
-                                                    self.input_x_j: x_train_j,
-                                                    self.input_x_j_selected: x_train_j_selected,
-                                                    self.input_y_j: y_train_j,
-                                                    self.input_y_j: y_train_j,
-                                                    self.input_global_y_j: y_global_train_j,
-                                                    self.input_global_y_j_selected: y_global_train_j_selected,
-                                                    self.selected_classes: self.data.selected_classes,
-                                                    self.support_number: self.data.support_number,
-                                                    self.dropout_rate: self.dropout_rate_value,
-                                                    self.training_phase: True, self.random_rotate: True,
-                                                    self.z1z2_training: z1z2_training})
-                                            train_g_loss.append(g_train_loss_value)
-                                            if isNaN(g_train_loss_value):
-                                                raise ValueError
+                                    #     if iter % 50 == 0:
+                                    #         g_val_loss_value, val_summaries = sess.run(
+                                    #             [self.losses["g_losses"], self.summary],
+                                    #             feed_dict={
+                                    #                 self.input_x_i: x_valid_i,
+                                    #                 self.input_y_i: y_valid_i,
+                                    #                 self.input_global_y_i: y_global_val_i,
+                                    #                 self.input_x_j: x_valid_j,
+                                    #                 self.input_x_j_selected: x_valid_j_selected,
+                                    #                 self.input_y_j: y_valid_j,
+                                    #                 self.input_global_y_j: y_global_val_j,
+                                    #                 self.input_global_y_j_selected: y_global_val_j_selected,
+                                    #                 self.selected_classes: self.data.selected_classes,
+                                    #                 self.support_number: self.data.support_number,
+                                    #                 self.dropout_rate: self.dropout_rate_value,
+                                    #                 self.training_phase: False, self.random_rotate: False,
+                                    #                 self.z1z2_training: z1z2_training})
+                                    #         val_g_loss.append(g_val_loss_value)
+                            
 
-                                            if iter % 50 == 0:
-                                                g_val_loss_value, val_summaries = sess.run(
-                                                    [self.losses["g_losses"], self.summary],
-                                                    feed_dict={
-                                                        self.input_x_i: x_valid_i,
-                                                        self.input_y_i: y_valid_i,
-                                                        self.input_global_y_i: y_global_val_i,
-                                                        # self.input_x_i: x_valid_j_selected,
-                                                        # self.input_y_i: y_valid_j_selected,
-                                                        # self.input_global_y_i: y_global_val_j_selected,
-                                                        self.input_x_j: x_valid_j,
-                                                        self.input_x_j_selected: x_valid_j_selected,
-                                                        self.input_y_j: y_valid_j,
-                                                        self.input_global_y_j: y_global_val_j,
-                                                        self.input_global_y_j_selected: y_global_val_j_selected,
-                                                        self.selected_classes: self.data.selected_classes,
-                                                        self.support_number: self.data.support_number,
-                                                        self.dropout_rate: self.dropout_rate_value,
-                                                        self.training_phase: False, self.random_rotate: False,
-                                                        self.z1z2_training: z1z2_training})
-                                                val_g_loss.append(g_val_loss_value)
+                            
+                            # self.train_writer.add_summary(train_summaries, global_step=self.iter_done)
+                            # self.validation_writer.add_summary(val_summaries, global_step=self.iter_done)
 
-
-                                else:
-                                    #### data preparation
-                                    x_train_i_selected_classes, x_train_j, y_train_i_selected_classes, y_train_j, y_global_train_i_selected_classes, y_global_train_j = self.data.get_train_batch()
-                                    x_val_i_selected_classes, x_valid_j, y_valid_i_selected_classes, y_valid_j, y_global_val_i_selected_classes, y_global_val_j = self.data.get_val_batch()
-                                    for i in range(1):
-                                        x_train_i = x_train_i_selected_classes[:, :, i, :, :, :]
-                                        y_train_i = y_train_i_selected_classes[:, :, i, :]
-                                        y_global_train_i = y_global_train_i_selected_classes[:, :, i, :]
-
-                                        x_valid_i = x_val_i_selected_classes[:, :, i, :, :, :]
-                                        y_valid_i = y_valid_i_selected_classes[:, :, i, :]
-                                        y_global_val_i = y_global_val_i_selected_classes[:, :, i, :]
-
-                                        support_index = int(np.random.choice(self.data.support_number, size=1))
-                                        x_train_j_selected = x_train_j[:, :,
-                                                             self.data.support_number * i + support_index, :, :, :]
-                                        y_train_j_selected = y_train_j[:, :,
-                                                             self.data.support_number * i + support_index, :]
-                                        y_global_train_j_selected = y_global_train_j[:, :,
-                                                                    self.data.support_number * i + support_index, :]
-                                        x_valid_j_selected = x_valid_j[:, :,
-                                                             self.data.support_number * i + support_index, :, :, :]
-                                        y_global_val_j_selected = y_global_val_j[:, :,
-                                                                  self.data.support_number * i + support_index, :]
-                                        y_valid_j_selected = y_valid_j[:, :,
-                                                             self.data.support_number * i + support_index, :]
-                                        for n in range(self.disc_iter):
-                                            _, d_train_loss_value = sess.run(
-                                                [self.graph_ops["d_opt_op"], self.losses["d_losses"]],
-                                                feed_dict={
-                                                    self.input_x_i: x_train_i,
-                                                    self.input_global_y_i: y_global_train_i,
-                                                    # self.input_x_i: x_train_j_selected,
-                                                    # self.input_global_y_i: y_global_train_j_selected,
-                                                    self.input_x_j: x_train_j,
-                                                    self.input_x_j_selected: x_train_j_selected,
-                                                    self.input_global_y_j: y_global_train_j,
-                                                    self.input_global_y_j_selected: y_global_train_j_selected,
-                                                    self.selected_classes: self.data.selected_classes,
-                                                    self.support_number: self.data.support_number,
-                                                    self.classes: self.data.training_classes,
-                                                    self.dropout_rate: self.dropout_rate_value,
-                                                    self.training_phase: True, self.random_rotate: True,
-                                                    self.z1z2_training: z1z2_training})
-                                            train_d_loss.append(d_train_loss_value)
-
-                                            if iter % 50 == 0:
-                                                d_val_loss_value = sess.run(
-                                                    self.losses["d_losses"],
-                                                    feed_dict={
-                                                        self.input_x_i: x_valid_i,
-                                                        self.input_global_y_i: y_global_val_i,
-                                                        self.input_x_j: x_valid_j,
-                                                        self.input_x_j_selected: x_valid_j_selected,
-                                                        self.input_global_y_j_selected: y_global_val_j_selected,
-                                                        self.input_global_y_j: y_global_val_j,
-                                                        self.selected_classes: self.data.selected_classes,
-                                                        self.support_number: self.data.support_number,
-                                                        self.classes: self.data.training_classes,
-                                                        self.dropout_rate: self.dropout_rate_value,
-                                                        self.training_phase: False, self.random_rotate: False,
-                                                        self.z1z2_training: z1z2_training})
-                                            val_d_loss.append(d_val_loss_value)
-                                        for n in range(self.gen_iter):
-                                            _, g_train_loss_value, train_summaries = sess.run(
-                                                [self.graph_ops["g_opt_op"], self.losses["g_losses"],
-                                                 self.summary],
-                                                feed_dict={
-                                                    self.input_x_i: x_train_i,
-                                                    self.input_y_i: y_train_i,
-                                                    self.input_global_y_i: y_global_train_i,
-                                                    # self.input_x_i: x_train_j_selected,
-                                                    # self.input_y_i: y_train_j_selected,
-                                                    # self.input_global_y_i: y_global_train_j_selected,
-                                                    self.input_x_j: x_train_j,
-                                                    self.input_x_j_selected: x_train_j_selected,
-                                                    self.input_y_j: y_train_j,
-                                                    self.input_y_j: y_train_j,
-                                                    self.input_global_y_j: y_global_train_j,
-                                                    self.input_global_y_j_selected: y_global_train_j_selected,
-                                                    self.selected_classes: self.data.selected_classes,
-                                                    self.support_number: self.data.support_number,
-                                                    self.dropout_rate: self.dropout_rate_value,
-                                                    self.training_phase: True, self.random_rotate: True,
-                                                    self.z1z2_training: z1z2_training})
-                                            train_g_loss.append(g_train_loss_value)
-                                            if isNaN(g_train_loss_value):
-                                                raise ValueError
-
-                                            if iter % 50 == 0:
-                                                g_val_loss_value, val_summaries = sess.run(
-                                                    [self.losses["g_losses"], self.summary],
-                                                    feed_dict={
-                                                        self.input_x_i: x_valid_i,
-                                                        self.input_y_i: y_valid_i,
-                                                        self.input_global_y_i: y_global_val_i,
-                                                        # self.input_x_i: x_valid_j_selected,
-                                                        # self.input_y_i: y_valid_j_selected,
-                                                        # self.input_global_y_i: y_global_val_j_selected,
-                                                        self.input_x_j: x_valid_j,
-                                                        self.input_x_j_selected: x_valid_j_selected,
-                                                        self.input_y_j: y_valid_j,
-                                                        self.input_global_y_j: y_global_val_j,
-                                                        self.input_global_y_j_selected: y_global_val_j_selected,
-                                                        self.selected_classes: self.data.selected_classes,
-                                                        self.support_number: self.data.support_number,
-                                                        self.dropout_rate: self.dropout_rate_value,
-                                                        self.training_phase: False, self.random_rotate: False,
-                                                        self.z1z2_training: z1z2_training})
-                                                val_g_loss.append(g_val_loss_value)
-                            # cur_sample += 1
-
-                            # if iter % (self.tensorboard_update_interval) == 0:
-                            self.train_writer.add_summary(train_summaries, global_step=self.iter_done)
-                            self.validation_writer.add_summary(val_summaries, global_step=self.iter_done)
-                            # after_generation = time.time()
-                            # print('time for generation', after_generation - after_fzl_classification)
-
-                            if iter == self.total_train_batches - 1:
+                            # if iter == self.total_train_batches - 1:
+                            if iter == 0:
+                                import pdb;pdb.set_trace()
+                                # sample_generator 生成图像保存到文件中; self.total_train_batches=9015, 每次过完一个epoch保存一次。可以把间隔设置小点.
                                 _, _, _ = sample_generator(num_generations=self.num_generations,
                                                            sess=sess,
                                                            same_images=self.same_images,
@@ -585,16 +500,11 @@ class ExperimentBuilder(object):
                                                            classes=self.classes,
                                                            classes_selected=self.selected_classes,
                                                            number_support=self.support_number,
-                                                           # selected_global_x_j = self.input_x_j_selected,
-                                                           # selected_global_y_j=self.input_global_y_j_selected,
                                                            z_vectors=self.z_vectors,
                                                            z_vectors_2=self.z_vectors_2,
                                                            conditional_inputs=x_train_i,
                                                            y_global_input_i=y_global_train_i,
                                                            y_input_i=y_train_i,
-                                                           # conditional_inputs=x_train_j_selected,
-                                                           # y_global_input_i = y_global_train_j_selected,
-                                                           # y_input_i = y_train_j_selected,
                                                            support_input=x_train_j,
                                                            y_input_j=y_train_j,
                                                            y_global_input_j=y_global_train_j,
@@ -605,8 +515,6 @@ class ExperimentBuilder(object):
                                                            z_input_2=self.z_input_2,
                                                            data=self.data,
                                                            batch_size=self.batch_size,
-                                                           # input_global_x_j_selected = x_train_j_selected,
-                                                           # input_global_y_j_selected = y_global_train_j_selected,
 
                                                            file_name="{}/train_z_variations_{}_{}_{}.png".format(
                                                                self.save_image_path,
@@ -618,7 +526,9 @@ class ExperimentBuilder(object):
                                                            z1z2_training=self.z1z2_training,
                                                            is_training=False,
                                                            training_z1z2=True)
+                                # to do: 每个epoch可以快速计算一下评测GAN生成的质量
                                 # print('time for sampling:', time.time() - after_generation)
+
 
                             self.iter_done = self.iter_done + 1
                             if iter % 50 == 0:
@@ -680,6 +590,7 @@ class ExperimentBuilder(object):
                                     total_g_val_loss_std))
 
                     # print('starting sampling')
+                    # 测试部分
                     with tqdm.tqdm(total=self.total_gen_batches) as pbar_samp:
                         np.random.seed(0)
                         for i in range(self.total_gen_batches):
@@ -707,17 +618,11 @@ class ExperimentBuilder(object):
                                                                classes=self.classes,
                                                                classes_selected=self.selected_classes,
                                                                number_support=self.support_number,
-                                                               # selected_global_x_j = self.input_x_j_selected,
-                                                               # selected_global_y_j=self.input_global_y_j_selected,
-
                                                                z_vectors=self.z_vectors,
                                                                z_vectors_2=self.z_vectors_2,
                                                                conditional_inputs=x_test_i,
                                                                y_input_i=y_test_i,
                                                                y_global_input_i=y_global_test_i,
-                                                               # conditional_inputs=x_test_j_selected,
-                                                               # y_input_i = y_test_j_selected,
-                                                               # y_global_input_i = y_global_test_j_selected,
 
                                                                support_input=x_test_j,
                                                                y_input_j=y_test_j,
@@ -729,8 +634,6 @@ class ExperimentBuilder(object):
                                                                z_input_2=self.z_input_2,
                                                                data=self.data,
                                                                batch_size=self.batch_size,
-                                                               # input_global_x_j_selected = x_train_j_selected,
-                                                               # input_global_y_j_selected = y_global_train_j_selected,
                                                                file_name="{}/test_z_variations_{}_{}_{}.png".format(
                                                                    self.save_image_path,
                                                                    image_name,
@@ -770,10 +673,5 @@ class ExperimentBuilder(object):
                                                                   self.image_width, e))
 
                         print("Saved current best val model at", val_save_path)
-
-                    # save_statistics(self.log_path, [e, total_d_train_loss_mean, total_d_val_loss_mean,
-                    #                             total_d_train_loss_std, total_d_val_loss_std,
-                    #                             total_g_train_loss_mean, total_g_val_loss_mean,
-                    #                             total_g_train_loss_std, total_g_val_loss_std])
                     pbar_e.update(1)
 

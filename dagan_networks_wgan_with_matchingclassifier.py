@@ -428,8 +428,7 @@ class DAGAN:
                               z_input_2=self.z_inputs_2,
                               is_z2=self.is_z2,
                               is_z2_vae=self.is_z2_vae)
-            return self.input_x_i[0], self.input_x_j[
-                0], generated, generated, generated,  input_y_i, input_global_y_i
+            return self.input_x_i[0], self.input_x_j[0], generated, generated, generated,  input_y_i, input_global_y_i
         else:
             generated, similarities, d_loss, preds_fake = self.generate(
                 conditional_images=conditional_inputs,
@@ -455,8 +454,7 @@ class DAGAN:
             # print('11111',few_shot_fake_category) shape=(16,)
             # print('22222',few_shot_confidence_score) shape=(16,)
 
-            return self.input_x_i[0], self.input_x_j[
-                0], generated, input_y_i, input_global_y_i, similarities, similarities, similarities
+            return self.input_x_i[0], self.input_x_j[0], generated, input_y_i, input_global_y_i, similarities, similarities, similarities
 
     def summary(self):
         new_summary = tf.summary.merge_all()

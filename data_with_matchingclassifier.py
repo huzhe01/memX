@@ -10,7 +10,7 @@ import cv2
 
 class DAGANDataset(object):
     def __init__(self, batch_size, last_training_class_index, reverse_channels, num_of_gpus, gen_batches,
-                 support_number, is_training, general_classification_samples, selected_classes, image_size):
+                 support_number, is_training, general_classification_samples, selected_classes, image_size, data_root):
         """
         :param batch_size: The batch size to use for the data loader
         :param last_training_class_index: The final index for the training set, used to restrict the training set
@@ -20,7 +20,7 @@ class DAGANDataset(object):
         :param num_of_gpus: Number of gpus to use for training
         :param gen_batches: How many batches to use from the validation set for the end of epoch generations
         """
-        self.x_train, self.x_test, self.x_val = self.load_dataset(last_training_class_index)
+        self.x_train, self.x_test, self.x_val = self.load_dataset(last_training_class_index,data_root)
         # (900, 20, 28, 28, 1)  (400, 20, 28, 28, 1)  (22, 20, 28, 28, 1)
         self.num_of_gpus = num_of_gpus
         self.batch_size = batch_size
@@ -72,7 +72,7 @@ class DAGANDataset(object):
         self.validation_data_size = self.x_val.shape[0] * self.x_val[0].shape[0]
         self.generation_data_size = self.validation_data_size
 
-    def load_dataset(self, last_training_class_index):
+    def load_dataset(self, last_training_class_index,data_root):
         """
         Loads the dataset into the data loader class. To be implemented in all classes that inherit
         DAGANImbalancedDataset
@@ -492,13 +492,11 @@ class OmniglotDAGANDataset(DAGANDataset):
 ### 1803:500:322 64*64*3
 class VGGFaceDAGANDataset(DAGANDataset):
     def __init__(self, batch_size, last_training_class_index, reverse_channels, num_of_gpus, gen_batches,
-                 support_number, is_training, general_classification_samples, selected_classes, image_size):
-        super(VGGFaceDAGANDataset, self).__init__(batch_size, last_training_class_index, reverse_channels, num_of_gpus,
-                                                  gen_batches, support_number, is_training,
-                                                  general_classification_samples, selected_classes, image_size)
-
-    def load_dataset(self, gan_training_index):
-        self.x = np.load("/model/huzhe/Dataset/vgg_face_data.npy")
+                 support_number, is_training, general_classification_samples, selected_classes, image_size,data_root):
+        super(VGGFaceDAGANDataset, self).__init__(batch_size, last_training_class_index, reverse_channels, num_of_gpus, gen_batches,
+                 support_number, is_training, general_classification_samples, selected_classes, image_size,data_root)
+    def load_dataset(self, gan_training_index,data_root):
+        self.x = np.load(data_root)
         self.x = self.x * 255
         # self.x = self.x / np.max(self.x)
         x_train, x_val, x_test = self.x[:1803], self.x[1803:2300], self.x[2300:]

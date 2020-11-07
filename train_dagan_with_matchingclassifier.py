@@ -5,7 +5,6 @@ from utils.parser_util import get_args
 batch_size, num_gpus,support_num, args = get_args()
 #set the data provider to use for the experiment
 
-
 if args.dataset == 'omniglot':
     print('omniglot')
     data = dataset.OmniglotDAGANDataset(batch_size=batch_size, last_training_class_index=900, reverse_channels=True,
@@ -14,8 +13,8 @@ if args.dataset == 'omniglot':
 elif args.dataset == 'vggface':
     print('vggface')
     data = dataset.VGGFaceDAGANDataset(batch_size=batch_size, last_training_class_index=1600, reverse_channels=True,
-                                        num_of_gpus=num_gpus, gen_batches=1000, support_number=support_num,is_training=args.is_training,general_classification_samples=args.general_classification_samples,selected_classes=args.selected_classes,image_size=args.image_width)
-
+                                        num_of_gpus=num_gpus, gen_batches=1000, support_number=support_num,is_training=args.is_training,general_classification_samples=args.general_classification_samples,selected_classes=args.selected_classes,image_size=args.image_width,
+                                        data_root=args.data_root)
 elif args.dataset == 'miniimagenet':
     print('miniimagenet')
     data = dataset.miniImagenetDAGANDataset(batch_size=batch_size, last_training_class_index=900, reverse_channels=True,
@@ -53,7 +52,7 @@ elif args.dataset == 'birds':
     
 
 
-
+import pdb;pdb.set_trace()
 #init experiment
 experiment = ExperimentBuilder(args, data=data)
 #run experiment

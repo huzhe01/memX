@@ -45,7 +45,6 @@ def sample_generator(num_generations, sess, same_images, dropout_rate, dropout_r
             dropout_rate: dropout_rate_value,
             training_phase: is_training,
             z1z2_training: training_z1z2})
-
     image_size = input_images.shape[1]
     channel = input_images.shape[-1]
 
@@ -136,6 +135,7 @@ def sample_generator(num_generations, sess, same_images, dropout_rate, dropout_r
         [batch_size * (1 + support_num + 1 + 1 + num_generations), image_size, image_size, channel])
     y_total_image = np.zeros([batch_size * (1 + support_num + 1 + 1 + num_generations), classes_number])
     y_few_shot_total_image = np.zeros([batch_size * (1 + support_num + 1 + 1 + num_generations), selected_classes])
+
 
     for k in range(1 + support_num + 1 + 1 + num_generations):
         if k == 0:
