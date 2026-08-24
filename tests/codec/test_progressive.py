@@ -23,6 +23,32 @@ def _npy_payload(array: np.ndarray, *, allow_pickle: bool = False) -> bytes:
     return stream.getvalue()
 
 
+def test_codec_bytes_match_the_planned_float32_quantizer() -> None:
+    code = np.array([61370.43359375, 14255.3369140625], dtype=np.float32)
+    flat = code.reshape(-1)
+    scale = max(
+        float(np.max(np.abs(flat))) / 127.0,
+        float(np.finfo(np.float32).eps),
+    )
+    base = np.round(flat / scale).clip(-127, 127).astype(np.int8).astype(np.float32) * scale
+    expected_base_payload = _npy_payload(base.reshape(code.shape).astype(np.float16))
+    decoded_base = base.astype(np.float16).astype(np.float32)
+    residual = flat - decoded_base
+    expected_packet_payloads = [
+        _PACKET_HEADER.pack(group, start)
+        + np.asarray(residual[start : start + 1], dtype="<f2").tobytes(order="C")
+        for group, start in enumerate(range(len(flat)))
+    ]
+
+    encoded = ProgressiveCodec(group_size=1).encode("float32-reference", code)
+
+    assert encoded.base_payload == expected_base_payload
+    assert [item.packet.payload for item in encoded.packets] == expected_packet_payloads
+    assert [item.packet.packet_id for item in encoded.packets] == [
+        packet_from_payload(payload).packet_id for payload in expected_packet_payloads
+    ]
+
+
 def test_packets_monotonically_reduce_code_error() -> None:
     code = np.array([0.1, -1.7, 0.3, 2.2, -0.8, 0.4, 1.1, -0.2], dtype=np.float32)
     encoded = ProgressiveCodec(group_size=2).encode("a", code)
@@ -105,20 +131,20 @@ def test_encoded_code_defensively_owns_stream_metadata() -> None:
     assert len(owned.packets) == 3
 
 
-def test_forged_packet_id_is_rejected_before_prefix_decode() -> None:
+def test_forged_packet_id_is_rejected_when_selected() -> None:
     encoded = ProgressiveCodec(group_size=3).encode("forged", np.arange(7, dtype=np.float32))
     packets = list(encoded.packets)
     packets[0] = replace(packets[0], packet=replace(packets[0].packet, packet_id="0" * 64))
     with pytest.raises(ValueError):
-        replace(encoded, packets=tuple(packets)).decode(0)
+        replace(encoded, packets=tuple(packets)).decode(1)
 
 
-def test_repeated_packet_is_rejected_before_prefix_decode() -> None:
+def test_repeated_packet_is_rejected_when_selected() -> None:
     encoded = ProgressiveCodec(group_size=3).encode("repeated", np.arange(7, dtype=np.float32))
     packets = list(encoded.packets)
     packets[1] = packets[0]
     with pytest.raises(ValueError):
-        replace(encoded, packets=tuple(packets)).decode(0)
+        replace(encoded, packets=tuple(packets)).decode(2)
 
 
 def test_packet_tuple_order_is_canonical() -> None:
@@ -126,15 +152,15 @@ def test_packet_tuple_order_is_canonical() -> None:
     packets = list(encoded.packets)
     packets[0], packets[1] = packets[1], packets[0]
     with pytest.raises(ValueError):
-        replace(encoded, packets=tuple(packets)).decode(0)
+        replace(encoded, packets=tuple(packets)).decode(1)
 
 
-def test_repeated_packet_group_is_rejected_before_prefix_decode() -> None:
+def test_repeated_packet_group_is_rejected_when_selected() -> None:
     encoded = ProgressiveCodec(group_size=3).encode("group", np.arange(7, dtype=np.float32))
     packets = list(encoded.packets)
     packets[1] = replace(packets[1], group=packets[0].group)
     with pytest.raises(ValueError):
-        replace(encoded, packets=tuple(packets)).decode(0)
+        replace(encoded, packets=tuple(packets)).decode(2)
 
 
 def test_packet_header_group_must_match_tuple_group() -> None:
@@ -143,7 +169,7 @@ def test_packet_header_group_must_match_tuple_group() -> None:
     _, start = _PACKET_HEADER.unpack(payload[: _PACKET_HEADER.size])
     tampered = _PACKET_HEADER.pack(99, start) + payload[_PACKET_HEADER.size :]
     with pytest.raises(ValueError):
-        _with_packet_payload(encoded, 0, tampered).decode(0)
+        _with_packet_payload(encoded, 0, tampered).decode(1)
 
 
 @pytest.mark.parametrize("start", [1, 4, 0xFFFFFFFF, 7])
@@ -153,7 +179,7 @@ def test_packet_start_must_be_canonical_and_in_bounds(start: int) -> None:
     group, _ = _PACKET_HEADER.unpack(payload[: _PACKET_HEADER.size])
     tampered = _PACKET_HEADER.pack(group, start) + payload[_PACKET_HEADER.size :]
     with pytest.raises(ValueError):
-        _with_packet_payload(encoded, 1, tampered).decode(0)
+        _with_packet_payload(encoded, 1, tampered).decode(2)
 
 
 @pytest.mark.parametrize(
@@ -170,7 +196,7 @@ def test_packet_body_size_must_match_canonical_segment(body: bytes) -> None:
     payload = encoded.packets[0].packet.payload
     tampered = payload[: _PACKET_HEADER.size] + body
     with pytest.raises(ValueError):
-        _with_packet_payload(encoded, 0, tampered).decode(0)
+        _with_packet_payload(encoded, 0, tampered).decode(1)
 
 
 def test_last_packet_cannot_extend_past_declared_shape() -> None:
@@ -178,7 +204,9 @@ def test_last_packet_cannot_extend_past_declared_shape() -> None:
     payload = encoded.packets[-1].packet.payload
     oversized = payload + np.zeros(1, dtype="<f2").tobytes()
     with pytest.raises(ValueError):
-        _with_packet_payload(encoded, len(encoded.packets) - 1, oversized).decode(0)
+        _with_packet_payload(encoded, len(encoded.packets) - 1, oversized).decode(
+            len(encoded.packets)
+        )
 
 
 @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
@@ -190,7 +218,25 @@ def test_nonfinite_float16_packet_body_is_rejected(value: float) -> None:
     body = np.array([value, 0.0, 0.0], dtype="<f2").tobytes()
     tampered = payload[: _PACKET_HEADER.size] + body
     with pytest.raises(ValueError):
-        _with_packet_payload(encoded, 0, tampered).decode(0)
+        _with_packet_payload(encoded, 0, tampered).decode(1)
+
+
+def test_malformed_unused_suffix_is_isolated_from_shorter_prefixes() -> None:
+    encoded = ProgressiveCodec(group_size=3).encode(
+        "suffix-isolation", np.arange(7, dtype=np.float32)
+    )
+    payload = encoded.packets[-1].packet.payload
+    nonfinite_body = np.array([np.nan], dtype="<f2").tobytes()
+    corrupted = _with_packet_payload(
+        encoded,
+        len(encoded.packets) - 1,
+        payload[: _PACKET_HEADER.size] + nonfinite_body,
+    )
+
+    for packet_count in range(len(encoded.packets)):
+        np.testing.assert_array_equal(corrupted.decode(packet_count), encoded.decode(packet_count))
+    with pytest.raises(ValueError):
+        corrupted.decode(len(encoded.packets))
 
 
 @pytest.mark.parametrize("extra", [False, True])
