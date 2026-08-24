@@ -877,7 +877,10 @@ git commit -m "feat: add progressive packet codec"
 
 ```python
 # tests/allocation/test_objective.py
+from fractions import Fraction
 from itertools import combinations
+
+import numpy as np
 
 from ratemem.allocation.objective import CoverageOracle, PacketBundle
 
@@ -898,29 +901,71 @@ def _oracle() -> CoverageOracle:
 def test_coverage_is_normalized_monotone_and_submodular() -> None:
     oracle = _oracle()
     names = tuple(oracle.bundles)
-    assert oracle.value(frozenset()) == 0.0
+    assert oracle.exact_value(frozenset()) == Fraction()
     subsets = [frozenset(c) for size in range(4) for c in combinations(names, size)]
     for left in subsets:
         for right in subsets:
             if left.issubset(right):
-                assert oracle.value(left) <= oracle.value(right) + 1e-12
+                assert oracle.exact_value(left) <= oracle.exact_value(right)
                 for item in set(names) - set(right):
-                    assert oracle.marginal(left, item) + 1e-12 >= oracle.marginal(right, item)
+                    assert oracle.exact_marginal(left, item) >= oracle.exact_marginal(
+                        right, item
+                    )
 
 
 def test_one_payload_can_benefit_two_concepts() -> None:
     oracle = _oracle()
-    assert oracle.value(frozenset({"shared"})) == 2.0
+    assert oracle.exact_value(frozenset({"shared"})) == Fraction(2)
 
 
-def test_group_weights_scale_only_their_declared_coverage_group() -> None:
-    bundle = PacketBundle("p", cost_bytes=4, gains={"a": (0.5, 0.5)})
-    oracle = CoverageOracle(
-        bundles={"p": bundle},
-        request_weights={"a": 2.0},
-        group_weights={"a": (1.0, 3.0)},
+def test_float_methods_are_reporting_views_of_exact_methods() -> None:
+    oracle = _oracle()
+    selected = frozenset({"shared"})
+    assert oracle.value(selected) == float(oracle.exact_value(selected))
+    assert oracle.marginal(selected, "a-only") == float(
+        oracle.exact_marginal(selected, "a-only")
     )
-    assert oracle.value(frozenset({"p"})) == 4.0
+
+
+def test_exact_objective_preserves_underflowed_multigroup_coefficients() -> None:
+    smallest_subnormal = 5e-324
+    oracle = CoverageOracle(
+        bundles={"p": PacketBundle("p", 1, {"a": (0.5,) * 5})},
+        request_weights={"a": smallest_subnormal},
+        group_weights={"a": (1.0,) * 5},
+    )
+    selected = frozenset({"p"})
+    exact_tiny = Fraction.from_float(smallest_subnormal)
+    assert oracle.exact_value(selected) == 5 * exact_tiny / 2
+    assert oracle.exact_marginal(frozenset(), "p") == 5 * exact_tiny / 2
+    assert isinstance(oracle.exact_value(selected), Fraction)
+    assert isinstance(oracle.exact_marginal(frozenset(), "p"), Fraction)
+
+
+def test_exact_objective_is_submodular_when_reporting_rounding_is_not() -> None:
+    above_half = float(np.nextafter(0.5, 1.0))
+    oracle = CoverageOracle(
+        bundles={
+            "below-half": PacketBundle("below-half", 1, {"a": (1.0 - above_half,)}),
+            "half": PacketBundle("half", 1, {"a": (0.5,)}),
+            "small": PacketBundle("small", 1, {"a": (2**-54,)}),
+        },
+        request_weights={"a": 1.0},
+        group_weights={"a": (1.0,)},
+    )
+    left = frozenset({"below-half"})
+    right = frozenset({"half", "small"})
+    union = left | right
+    intersection = left & right
+    assert oracle.value(left) + oracle.value(right) < (
+        oracle.value(union) + oracle.value(intersection)
+    )
+    assert oracle.exact_value(left) + oracle.exact_value(right) >= (
+        oracle.exact_value(union) + oracle.exact_value(intersection)
+    )
+    assert oracle.exact_marginal(left, "small") == (
+        oracle.exact_value(left | {"small"}) - oracle.exact_value(left)
+    )
 ```
 
 - [ ] **Step 2: Run the objective tests and verify the import fails**
@@ -936,9 +981,43 @@ Expected: collection fails importing `ratemem.allocation.objective`.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from fractions import Fraction
+from numbers import Real
 from types import MappingProxyType
-from typing import Mapping
+
+ExactCoverage = dict[tuple[str, int], Fraction]
+
+
+def _nonempty_id(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be a string")
+    if not value:
+        raise ValueError(f"{label} must be nonempty")
+    return value
+
+
+def _nonnegative_real(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{label} must be a real number")
+    try:
+        normalized = float(value)
+    except (OverflowError, ValueError) as error:
+        raise ValueError(f"{label} must be finite and nonnegative") from error
+    if normalized < 0.0 or not math.isfinite(normalized):
+        raise ValueError(f"{label} must be finite and nonnegative")
+    return normalized
+
+
+def _nonempty_vector(value: object, label: str) -> tuple[float, ...]:
+    if isinstance(value, str | bytes) or not isinstance(value, Sequence):
+        raise TypeError(f"{label} must be a numeric sequence")
+    if not value:
+        raise ValueError(f"{label} must be nonempty")
+    return tuple(
+        _nonnegative_real(scalar, f"{label} scalar") for scalar in value
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -948,21 +1027,26 @@ class PacketBundle:
     gains: Mapping[str, tuple[float, ...]]
 
     def __post_init__(self) -> None:
+        _nonempty_id(self.packet_id, "packet id")
+        if type(self.cost_bytes) is not int:
+            raise TypeError("packet cost must be an integer byte count")
+        if self.cost_bytes <= 0:
+            raise ValueError("packet cost must be positive")
+
+        raw_gains: object = self.gains
+        if not isinstance(raw_gains, Mapping):
+            raise TypeError("gains must be a mapping")
+        if not raw_gains:
+            raise ValueError("packet gains must contain at least one incidence")
+        normalized_gains: dict[str, tuple[float, ...]] = {}
+        for raw_handle, raw_values in raw_gains.items():
+            handle = _nonempty_id(raw_handle, "concept id")
+            normalized_gains[handle] = _nonempty_vector(raw_values, "gain vector")
         object.__setattr__(
             self,
             "gains",
-            MappingProxyType(
-                {handle: tuple(values) for handle, values in self.gains.items()}
-            ),
+            MappingProxyType(dict(sorted(normalized_gains.items()))),
         )
-        if self.cost_bytes <= 0:
-            raise ValueError("packet cost must be positive")
-        if any(
-            value < 0.0 or not math.isfinite(value)
-            for rows in self.gains.values()
-            for value in rows
-        ):
-            raise ValueError("certified packet gains must be finite and nonnegative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -970,53 +1054,212 @@ class CoverageOracle:
     bundles: Mapping[str, PacketBundle]
     request_weights: Mapping[str, float]
     group_weights: Mapping[str, tuple[float, ...]]
+    _exact_gains: Mapping[str, Mapping[str, tuple[Fraction, ...]]] = field(
+        init=False, repr=False, compare=False
+    )
+    _exact_coefficients: Mapping[str, tuple[Fraction, ...]] = field(
+        init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "bundles", MappingProxyType(dict(self.bundles)))
+        raw_bundles: object = self.bundles
+        raw_request_weights: object = self.request_weights
+        raw_group_weights: object = self.group_weights
+        if not isinstance(raw_bundles, Mapping):
+            raise TypeError("bundles must be a mapping")
+        if not isinstance(raw_request_weights, Mapping):
+            raise TypeError("request_weights must be a mapping")
+        if not isinstance(raw_group_weights, Mapping):
+            raise TypeError("group_weights must be a mapping")
+
+        normalized_bundles: dict[str, PacketBundle] = {}
+        for raw_key, raw_bundle in raw_bundles.items():
+            key = _nonempty_id(raw_key, "bundle id")
+            if not isinstance(raw_bundle, PacketBundle):
+                raise TypeError("bundle values must be PacketBundle instances")
+            if key != raw_bundle.packet_id:
+                raise ValueError("bundle map key must equal packet_id")
+            normalized_bundles[key] = raw_bundle
+
+        normalized_request_weights: dict[str, float] = {}
+        for raw_handle, raw_weight in raw_request_weights.items():
+            handle = _nonempty_id(raw_handle, "concept id")
+            normalized_request_weights[handle] = _nonnegative_real(
+                raw_weight, "request weight"
+            )
+
+        normalized_group_weights: dict[str, tuple[float, ...]] = {}
+        for raw_handle, raw_weights in raw_group_weights.items():
+            handle = _nonempty_id(raw_handle, "concept id")
+            normalized_group_weights[handle] = _nonempty_vector(
+                raw_weights, "group weight vector"
+            )
+
+        if set(normalized_request_weights) != set(normalized_group_weights):
+            raise ValueError("request and group weights must name the same concepts")
+        for bundle in normalized_bundles.values():
+            for handle, gains in bundle.gains.items():
+                if handle not in normalized_group_weights:
+                    raise ValueError(f"packet gain names unknown concept: {handle}")
+                if len(gains) > len(normalized_group_weights[handle]):
+                    raise ValueError(f"packet gain exceeds group width: {handle}")
+
+        exact_gains: dict[str, Mapping[str, tuple[Fraction, ...]]] = {}
+        for packet_id, bundle in normalized_bundles.items():
+            exact_gains[packet_id] = MappingProxyType(
+                {
+                    handle: tuple(Fraction.from_float(gain) for gain in gains)
+                    for handle, gains in bundle.gains.items()
+                }
+            )
+
+        exact_coefficients: dict[str, tuple[Fraction, ...]] = {}
+        for handle, weight in normalized_request_weights.items():
+            exact_weight = Fraction.from_float(weight)
+            handle_coefficients = []
+            for beta in normalized_group_weights[handle]:
+                coefficient = exact_weight * Fraction.from_float(beta)
+                try:
+                    reporting_coefficient = float(coefficient)
+                except OverflowError as error:
+                    raise ValueError(
+                        "oracle coefficient must be representable as a finite "
+                        "float for reporting"
+                    ) from error
+                if not math.isfinite(reporting_coefficient):
+                    raise ValueError(
+                        "oracle coefficient must be representable as a finite "
+                        "float for reporting"
+                    )
+                handle_coefficients.append(coefficient)
+            exact_coefficients[handle] = tuple(handle_coefficients)
+
+        maximum_objective = sum(
+            (
+                coefficient
+                for coefficients in exact_coefficients.values()
+                for coefficient in coefficients
+            ),
+            start=Fraction(),
+        )
+        try:
+            reporting_maximum = float(maximum_objective)
+        except OverflowError as error:
+            raise ValueError(
+                "maximum objective mass must be representable as a finite "
+                "float for reporting"
+            ) from error
+        if not math.isfinite(reporting_maximum):
+            raise ValueError(
+                "maximum objective mass must be representable as a finite "
+                "float for reporting"
+            )
+
         object.__setattr__(
-            self, "request_weights", MappingProxyType(dict(self.request_weights))
+            self,
+            "bundles",
+            MappingProxyType(dict(sorted(normalized_bundles.items()))),
+        )
+        object.__setattr__(
+            self,
+            "request_weights",
+            MappingProxyType(dict(sorted(normalized_request_weights.items()))),
         )
         object.__setattr__(
             self,
             "group_weights",
-            MappingProxyType(
-                {handle: tuple(values) for handle, values in self.group_weights.items()}
-            ),
+            MappingProxyType(dict(sorted(normalized_group_weights.items()))),
         )
-        scalars = list(self.request_weights.values()) + [
-            value for rows in self.group_weights.values() for value in rows
-        ]
-        if any(value < 0.0 or not math.isfinite(value) for value in scalars):
-            raise ValueError("oracle weights must be finite and nonnegative")
-        if set(self.request_weights) != set(self.group_weights):
-            raise ValueError("request and group weights must name the same concepts")
-        if any(key != bundle.packet_id for key, bundle in self.bundles.items()):
-            raise ValueError("bundle map key must equal packet_id")
-        for bundle in self.bundles.values():
-            for handle, gains in bundle.gains.items():
-                if handle not in self.group_weights:
-                    raise ValueError(f"packet gain names unknown concept: {handle}")
-                if len(gains) > len(self.group_weights[handle]):
-                    raise ValueError(f"packet gain exceeds group width: {handle}")
+        object.__setattr__(
+            self,
+            "_exact_gains",
+            MappingProxyType(dict(sorted(exact_gains.items()))),
+        )
+        object.__setattr__(
+            self,
+            "_exact_coefficients",
+            MappingProxyType(dict(sorted(exact_coefficients.items()))),
+        )
+
+    def _selected_ids(self, selected: frozenset[str]) -> tuple[str, ...]:
+        selected_ids = tuple(sorted(selected))
+        for packet_id in selected_ids:
+            self.bundles[packet_id]
+        return selected_ids
+
+    def _empty_exact_coverage(self) -> ExactCoverage:
+        return {
+            (handle, group): Fraction()
+            for handle, coefficients in self._exact_coefficients.items()
+            for group in range(len(coefficients))
+        }
+
+    def _add_exact_gains(self, coverage: ExactCoverage, item: str) -> None:
+        for handle, gains in self._exact_gains[item].items():
+            for group, gain in enumerate(gains):
+                key = (handle, group)
+                coverage[key] = min(Fraction(1), coverage[key] + gain)
+
+    def _exact_coverage(self, selected_ids: tuple[str, ...]) -> ExactCoverage:
+        coverage = self._empty_exact_coverage()
+        for item in selected_ids:
+            self._add_exact_gains(coverage, item)
+        return coverage
+
+    def _exact_value_from_coverage(
+        self, coverage: Mapping[tuple[str, int], Fraction]
+    ) -> Fraction:
+        return sum(
+            (
+                coefficient * coverage[(handle, group)]
+                for handle, coefficients in self._exact_coefficients.items()
+                for group, coefficient in enumerate(coefficients)
+            ),
+            start=Fraction(),
+        )
+
+    def _exact_marginal_from_coverage(
+        self, coverage: Mapping[tuple[str, int], Fraction], item: str
+    ) -> Fraction:
+        terms = []
+        bundle_gains = self._exact_gains[item]
+        for handle, coefficients in self._exact_coefficients.items():
+            item_gains = bundle_gains.get(handle, ())
+            for group, coefficient in enumerate(coefficients):
+                item_gain = (
+                    item_gains[group] if group < len(item_gains) else Fraction()
+                )
+                remaining = Fraction(1) - coverage[(handle, group)]
+                terms.append(coefficient * min(remaining, item_gain))
+        return sum(terms, start=Fraction())
+
+    def exact_value(self, selected: frozenset[str]) -> Fraction:
+        """Return certified utility over exact binary-rational normalized inputs."""
+        selected_ids = self._selected_ids(selected)
+        return self._exact_value_from_coverage(self._exact_coverage(selected_ids))
+
+    def exact_marginal(self, selected: frozenset[str], item: str) -> Fraction:
+        """Return a direct exact marginal without rounded-value subtraction."""
+        selected_ids = self._selected_ids(selected)
+        self.bundles[item]
+        if item in selected:
+            return Fraction()
+        return self._exact_marginal_from_coverage(
+            self._exact_coverage(selected_ids), item
+        )
 
     def value(self, selected: frozenset[str]) -> float:
-        total = 0.0
-        for handle, weight in self.request_weights.items():
-            for group, beta in enumerate(self.group_weights[handle]):
-                coverage = sum(
-                    self.bundles[item].gains.get(handle, ())[group]
-                    if group < len(self.bundles[item].gains.get(handle, ()))
-                    else 0.0
-                    for item in selected
-                )
-                total += weight * beta * min(1.0, coverage)
-        return total
+        """Return a rounded float report; certification uses exact_value."""
+        return float(self.exact_value(selected))
 
     def marginal(self, selected: frozenset[str], item: str) -> float:
-        return self.value(selected | {item}) - self.value(selected)
+        """Return a rounded float report; certification uses exact_marginal."""
+        return float(self.exact_marginal(selected, item))
 
     def cost(self, selected: frozenset[str]) -> int:
-        return sum(self.bundles[item].cost_bytes for item in selected)
+        return sum(
+            self.bundles[item].cost_bytes for item in self._selected_ids(selected)
+        )
 ```
 
 - [ ] **Step 4: Run objective tests and static checks**
@@ -1029,7 +1272,7 @@ uv run ruff check src/ratemem/allocation tests/allocation
 uv run mypy src/ratemem/allocation
 ```
 
-Expected: `3 passed`; Ruff and mypy exit 0.
+Expected: all exact-objective and reporting-view tests pass; Ruff and mypy exit 0.
 
 - [ ] **Step 5: Commit the certified objective**
 
@@ -1175,7 +1418,7 @@ def test_prescreen_reduces_four_concepts_with_eight_packets_each() -> None:
     assert reduced.cost(chosen) <= 4
 
 
-def test_rounding_cannot_change_certified_selection() -> None:
+def test_allocator_factor_on_rounding_adversarial_instance() -> None:
     oracle = CoverageOracle(
         bundles={
             "a-exact": PacketBundle("a-exact", 1, {"a": (0.5, 2**-54)}),
@@ -1187,8 +1430,19 @@ def test_rounding_cannot_change_certified_selection() -> None:
     assert oracle.value(frozenset({"a-exact"})) == oracle.value(
         frozenset({"z-rounded"})
     )
-    reduced = prescreen_certified_oracle(oracle, budget_bytes=1, max_bundles=1)
-    assert tuple(reduced.bundles) == ("a-exact",)
+    assert oracle.exact_value(frozenset({"a-exact"})) > oracle.exact_value(
+        frozenset({"z-rounded"})
+    )
+    assert tuple(
+        prescreen_certified_oracle(oracle, budget_bytes=1, max_bundles=1).bundles
+    ) == ("a-exact",)
+
+    chosen = allocate_snapshot(oracle, budget_bytes=1)
+    optimum = exhaustive_optimum(oracle, budget_bytes=1)
+
+    assert optimum == frozenset({"a-exact"})
+    assert chosen == frozenset({"a-exact"})
+    _assert_certified_ratio(oracle, chosen, optimum)
 
 
 @pytest.mark.parametrize("max_bundles", [0, -1, 25])
@@ -1796,6 +2050,17 @@ def test_manifest_rejects_secret_shaped_values() -> None:
 import json
 import subprocess
 import sys
+from typing import Any
+
+import pytest
+
+import ratemem.cli as cli
+
+_EXPECTED = {
+    "budget_bytes": 8192,
+    "serialized_bytes": 403,
+    "status": "passed",
+}
 
 
 def test_core_smoke_command() -> None:
@@ -1806,8 +2071,38 @@ def test_core_smoke_command() -> None:
         text=True,
     )
     payload = json.loads(result.stdout)
-    assert payload["status"] == "passed"
+    assert payload == _EXPECTED
     assert payload["serialized_bytes"] <= payload["budget_bytes"]
+
+
+def test_smoke_prescreens_before_certified_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    captured: dict[str, object] = {}
+    screened_oracle = object()
+
+    def fake_prescreen(oracle: Any, budget_bytes: int) -> object:
+        calls.append("prescreen")
+        captured["packet_id"] = next(iter(oracle.bundles))
+        captured["budget_bytes"] = budget_bytes
+        return screened_oracle
+
+    def fake_allocate(oracle: object, budget_bytes: int) -> frozenset[str]:
+        calls.append("allocate")
+        assert oracle is screened_oracle
+        assert budget_bytes == captured["budget_bytes"]
+        packet_id = captured["packet_id"]
+        assert isinstance(packet_id, str)
+        return frozenset({packet_id})
+
+    monkeypatch.setattr(
+        cli, "prescreen_certified_oracle", fake_prescreen, raising=False
+    )
+    monkeypatch.setattr(cli, "allocate_snapshot", fake_allocate)
+
+    assert cli.smoke_core() == _EXPECTED
+    assert calls == ["prescreen", "allocate"]
 ```
 
 - [ ] **Step 2: Run both tests and verify missing modules fail**
@@ -1857,8 +2152,14 @@ import json
 import numpy as np
 
 from ratemem.allocation.objective import CoverageOracle, PacketBundle
-from ratemem.allocation.snapshot import allocate_snapshot
+from ratemem.allocation.snapshot import (
+    allocate_snapshot,
+    prescreen_certified_oracle,
+)
+from ratemem.artifacts.schema import AttemptManifest
 from ratemem.codec.progressive import ProgressiveCodec
+from ratemem.lifecycle.events import CreateEvent, ProbeEvent
+from ratemem.lifecycle.replay import replay
 from ratemem.state.model import Incidence
 from ratemem.state.serialization import bundle_cost_bytes
 from ratemem.state.store import PacketStore
@@ -1866,10 +2167,11 @@ from ratemem.state.store import PacketStore
 
 def smoke_core() -> dict[str, int | str]:
     budget = 8192
-    encoded = ProgressiveCodec(group_size=4).encode(
-        "concept-a", np.linspace(-1.0, 1.0, 16, dtype=np.float32)
+    source = np.linspace(-1.0, 1.0, 16, dtype=np.float32)
+    encoded = ProgressiveCodec(group_size=4).encode("concept-a", source)
+    store = PacketStore.empty(budget).create(
+        "concept-a", encoded.base_payload, created_at=0
     )
-    store = PacketStore.empty(budget).create("concept-a", encoded.base_payload, created_at=0)
     packet = encoded.packets[0].packet
     incidence = Incidence("concept-a", packet.packet_id, gain_q=8)
     store = store.attach(packet, incidence)
@@ -1883,9 +2185,60 @@ def smoke_core() -> dict[str, int | str]:
         {"concept-a": 1.0},
         {"concept-a": (1.0,)},
     )
-    chosen = allocate_snapshot(oracle, packet_bytes)
+    screened_oracle = prescreen_certified_oracle(oracle, packet_bytes)
+    chosen = allocate_snapshot(screened_oracle, packet_bytes)
     if chosen != frozenset({packet.packet_id}):
-        raise RuntimeError("snapshot allocator rejected the only feasible useful packet")
+        raise RuntimeError(
+            "snapshot allocator rejected the only feasible useful packet"
+        )
+
+    selected = encoded.decode(packet_count=1)
+    if selected.shape != encoded.shape or not np.all(np.isfinite(selected)):
+        raise RuntimeError("decoded selected prefix is nonfinite or misshaped")
+    base = encoded.decode(packet_count=0)
+    if base.shape != encoded.shape or not np.all(np.isfinite(base)):
+        raise RuntimeError("decoded base prefix is nonfinite or misshaped")
+    base_error = float(
+        np.mean(np.square(source.astype(np.float64) - base.astype(np.float64)))
+    )
+    selected_error = float(
+        np.mean(
+            np.square(source.astype(np.float64) - selected.astype(np.float64))
+        )
+    )
+    if not selected_error < base_error:
+        raise RuntimeError(
+            "selected prefix did not strictly improve reconstruction error"
+        )
+
+    lifecycle = replay(
+        (
+            CreateEvent("smoke-create", "lifecycle-a", b"base"),
+            ProbeEvent("smoke-probe", "lifecycle-a"),
+        ),
+        budget_bytes=budget,
+    )
+    lifecycle_record = lifecycle.state.bases["lifecycle-a"]
+    if (
+        lifecycle.errors
+        or lifecycle_record.reads != 0
+        or lifecycle.state.serialized_bytes > budget
+        or lifecycle.probe_sizes != (lifecycle.state.serialized_bytes,)
+    ):
+        raise RuntimeError("lifecycle create-probe smoke invariant failed")
+
+    manifest = AttemptManifest(
+        run_id="cpu-smoke",
+        git_revision="0" * 40,
+        config_hash="0" * 64,
+        status="passed",
+    )
+    revalidated_manifest = AttemptManifest.model_validate_json(
+        manifest.model_dump_json()
+    )
+    if revalidated_manifest != manifest:
+        raise RuntimeError("attempt manifest failed its serialization round trip")
+
     return {
         "status": "passed",
         "serialized_bytes": store.state.serialized_bytes,

@@ -499,7 +499,7 @@ claims:
   allocator_guarantee:
     section: method
     gate_id: allocator_guarantee
-    endpoint: certified_reduced_set_approximation_factor
+    endpoint: certified_reduced_set_approximation_ratio
     comparator_source: exact_reduced_set_optimum
     ground_set_scope: causal_singleton_density_prescreen_C_t_max24
     positive_wording_requires_gate_pass: true
@@ -525,11 +525,21 @@ from ratemem.paper.render import build_generated_release
 
 def test_allocator_claim_registry_locks_reduced_ground_set() -> None:
     registry = yaml.safe_load(Path("paper/claims.yaml").read_text(encoding="utf-8"))
+    scientific = yaml.safe_load(
+        Path("configs/scientific/evaluation-policy.yaml").read_text(encoding="utf-8")
+    )
     claim = registry["claims"]["allocator_guarantee"]
-    assert claim["endpoint"] == "certified_reduced_set_approximation_factor"
+    scientific_claim = scientific["claims"]["allocator_guarantee"]
+    assert (
+        claim["endpoint"]
+        == scientific_claim["primary_endpoint"]
+        == "certified_reduced_set_approximation_ratio"
+    )
+    assert scientific_claim["required_controls"] == [claim["comparator_source"]]
     assert claim["comparator_source"] == "exact_reduced_set_optimum"
     assert (
         claim["ground_set_scope"]
+        == scientific_claim["ground_set_scope"]
         == "causal_singleton_density_prescreen_C_t_max24"
     )
 

@@ -40,16 +40,17 @@ The theorem is about `exact_value` over the exact binary-rational normalized inp
 ## Deterministic causal prescreen
 
 The controller passes its history-only candidate oracle to `prescreen_certified_oracle`. The
-prescreen first removes every bundle whose individual cost exceeds `b_t`. It ranks the remaining
-bundles by the exact singleton density
+prescreen first removes every bundle whose individual cost exceeds `b_t`. It sorts the remaining
+bundles in descending order by the exact singleton density
 
     (F_t({p}) - F_t(empty)) / cost_bytes(p),
 
 using `Fraction` arithmetic and ties in favor of the lexicographically larger packet ID. Let `I_t`
 be the individually feasible subset of `G_t`. Given an exact positive integer cap `L <= 24`, the
-prescreen retains the first `min(L, |I_t|)` ranked bundles. Call the resulting reduced ground set
-`C_t`. The operation is deterministic and depends only on its caller-provided causal inputs; it
-neither reads future events nor mutates the input oracle.
+prescreen retains the first `min(L, |I_t|)` bundles in that descending order—exactly the
+highest-density bundles. Call the resulting reduced ground set `C_t`. The operation is deterministic
+and depends only on its caller-provided causal inputs; it neither reads future events nor mutates the
+input oracle.
 
 Filtering an individually infeasible bundle does not change a feasible optimum. Truncating the
 remaining candidates by singleton density can change it. Consequently, the prescreen has **no
