@@ -1645,10 +1645,29 @@ uv run pytest -q
 uv run ruff check src tests
 uv run mypy src/ratemem
 uv run python -m ratemem.cli smoke-core
-if rg -q '(ak|as)-[A-Za-z0-9_-]{20,}' src tests docs; then exit 1; fi
+if git grep -Iq -E '(ak|as)-[A-Za-z0-9_-]{20,}' -- .; then
+  exit 1
+else
+  ratemem_tracked_scan_status=$?
+  if [ "$ratemem_tracked_scan_status" -ne 1 ]; then
+    exit "$ratemem_tracked_scan_status"
+  fi
+fi
+for ratemem_scan_root in artifacts run_log logs exports; do
+  if [ -e "$ratemem_scan_root" ]; then
+    if rg --hidden --no-ignore -q '(ak|as)-[A-Za-z0-9_-]{20,}' "$ratemem_scan_root"; then
+      exit 1
+    else
+      ratemem_generated_scan_status=$?
+      if [ "$ratemem_generated_scan_status" -ne 1 ]; then
+        exit "$ratemem_generated_scan_status"
+      fi
+    fi
+  fi
+done
 ```
 
-Expected: all tests pass; Ruff/mypy exit 0; CLI prints a JSON object with `"status": "passed"`; credential scan exits 0.
+Expected: all tests pass; Ruff/mypy exit 0; CLI prints a JSON object with `"status": "passed"`; both quiet credential scans exit 0. The tracked-tree scan covers root configuration and scripts, while the explicit generated-root scan includes ignored and hidden artifacts, logs, and exports.
 
 ```bash
 git add src/ratemem/artifacts src/ratemem/cli.py tests/artifacts tests/test_cli.py

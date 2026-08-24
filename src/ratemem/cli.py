@@ -7,7 +7,10 @@ import numpy as np
 
 from ratemem.allocation.objective import CoverageOracle, PacketBundle
 from ratemem.allocation.snapshot import allocate_snapshot
+from ratemem.artifacts.schema import AttemptManifest
 from ratemem.codec.progressive import ProgressiveCodec
+from ratemem.lifecycle.events import CreateEvent, ProbeEvent
+from ratemem.lifecycle.replay import replay
 from ratemem.state.model import Incidence
 from ratemem.state.serialization import bundle_cost_bytes
 from ratemem.state.store import PacketStore
@@ -39,6 +42,39 @@ def smoke_core() -> dict[str, int | str]:
         raise RuntimeError(
             "snapshot allocator rejected the only feasible useful packet"
         )
+
+    decoded = encoded.decode(packet_count=1)
+    if decoded.shape != encoded.shape or not np.all(np.isfinite(decoded)):
+        raise RuntimeError("decoded selected prefix is nonfinite or misshaped")
+
+    lifecycle = replay(
+        (
+            CreateEvent("smoke-create", "lifecycle-a", b"base"),
+            ProbeEvent("smoke-probe", "lifecycle-a"),
+        ),
+        budget_bytes=budget,
+    )
+    lifecycle_record = lifecycle.state.bases["lifecycle-a"]
+    if (
+        lifecycle.errors
+        or lifecycle_record.reads != 0
+        or lifecycle.state.serialized_bytes > budget
+        or lifecycle.probe_sizes != (lifecycle.state.serialized_bytes,)
+    ):
+        raise RuntimeError("lifecycle create-probe smoke invariant failed")
+
+    manifest = AttemptManifest(
+        run_id="cpu-smoke",
+        git_revision="0" * 40,
+        config_hash="0" * 64,
+        status="passed",
+    )
+    revalidated_manifest = AttemptManifest.model_validate_json(
+        manifest.model_dump_json()
+    )
+    if revalidated_manifest != manifest:
+        raise RuntimeError("attempt manifest failed its serialization round trip")
+
     return {
         "status": "passed",
         "serialized_bytes": store.state.serialized_bytes,
