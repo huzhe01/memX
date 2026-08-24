@@ -10,6 +10,28 @@ class BudgetExceeded(ValueError):
     pass
 
 
+def _validate_packet(packet: Packet) -> None:
+    if hashlib.sha256(packet.payload).hexdigest() != packet.packet_id:
+        raise ValueError("packet hash mismatch")
+
+
+def _validate_state(state: MemoryState) -> None:
+    for packet in state.packets.values():
+        _validate_packet(packet)
+
+    referenced_packets: set[str] = set()
+    for incidence in state.incidences.values():
+        if (
+            incidence.handle not in state.bases
+            or incidence.packet_id not in state.packets
+        ):
+            raise ValueError("dangling packet incidence")
+        referenced_packets.add(incidence.packet_id)
+
+    if state.packets.keys() - referenced_packets:
+        raise ValueError("orphan packet")
+
+
 @dataclass(frozen=True, slots=True)
 class PacketStore:
     state: MemoryState
@@ -18,6 +40,7 @@ class PacketStore:
     def __post_init__(self) -> None:
         if self.budget_bytes < 0:
             raise ValueError("budget_bytes must be nonnegative")
+        _validate_state(self.state)
         if self.state.serialized_bytes > self.budget_bytes:
             raise BudgetExceeded(
                 f"state uses {self.state.serialized_bytes} bytes, "
@@ -32,12 +55,12 @@ class PacketStore:
         return PacketStore(state=state, budget_bytes=self.budget_bytes)
 
     @staticmethod
-    def _validate_attachment(packet: Packet, incidence: Incidence, handle: str) -> None:
-        if hashlib.sha256(packet.payload).hexdigest() != packet.packet_id:
-            raise ValueError("packet hash mismatch")
+    def _validate_incidence(
+        incidence: Incidence, handle: str, packet_id: str
+    ) -> None:
         if incidence.handle != handle:
             raise ValueError("incidence handle does not match operation")
-        if incidence.packet_id != packet.packet_id:
+        if incidence.packet_id != packet_id:
             raise ValueError("incidence packet id does not match payload")
 
     @staticmethod
@@ -68,7 +91,9 @@ class PacketStore:
         for incidence in bundle:
             if incidence.handle not in self.state.bases:
                 raise KeyError(incidence.handle)
-            self._validate_attachment(packet, incidence, incidence.handle)
+        _validate_packet(packet)
+        for incidence in bundle:
+            self._validate_incidence(incidence, incidence.handle, packet.packet_id)
         packets = dict(self.state.packets)
         packets[packet.packet_id] = packet
         incidences = dict(self.state.incidences)
@@ -84,8 +109,12 @@ class PacketStore:
     ) -> PacketStore:
         if handle not in self.state.bases:
             raise KeyError(handle)
+        packet_ids = [packet.packet_id for packet, _ in attachments]
+        if len(set(packet_ids)) != len(packet_ids):
+            raise ValueError("replacement repeats packet attachment")
         for packet, incidence in attachments:
-            self._validate_attachment(packet, incidence, handle)
+            _validate_packet(packet)
+            self._validate_incidence(incidence, handle, packet.packet_id)
         old = self.state.bases[handle]
         bases = dict(self.state.bases)
         bases[handle] = BaseRecord(handle, payload, old.reads, old.created_at)
