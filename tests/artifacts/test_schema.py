@@ -186,6 +186,18 @@ def _synthetic_credential(prefix: str = "ak-") -> str:
     return prefix + _SYNTHETIC_SUFFIX
 
 
+def _unicode_escape_every_character(value: str) -> str:
+    return "".join(f"\\u{ord(character):04x}" for character in value)
+
+
+def _json_input(raw: str, payload_type: str) -> str | bytes | bytearray:
+    if payload_type == "bytes":
+        return raw.encode("ascii")
+    if payload_type == "bytearray":
+        return bytearray(raw, "ascii")
+    return raw
+
+
 def _valid_input() -> dict[str, Any]:
     return {
         "run_id": "cpu-smoke",
@@ -508,6 +520,82 @@ def test_json_escaped_credentials_are_preflighted(location: str) -> None:
     )
 
 
+@pytest.mark.parametrize("payload_type", ["str", "bytes", "bytearray"])
+@pytest.mark.parametrize("escaped", [False, True])
+@pytest.mark.parametrize(
+    "scenario",
+    ["root-shadowed-value", "nested-shadowed-value", "nested-credential-key"],
+)
+def test_public_json_boundary_rejects_duplicate_keys_before_shadowing(
+    payload_type: str, escaped: bool, scenario: str
+) -> None:
+    credential = _synthetic_credential("as-")
+    encoded_credential = (
+        _unicode_escape_every_character(credential) if escaped else credential
+    )
+    prefix = (
+        '{"run_id":"cpu-smoke","git_revision":"'
+        + "f" * 40
+        + '","config_hash":"'
+        + "a" * 64
+        + '","status":"passed"'
+    )
+    if scenario == "root-shadowed-value":
+        raw = (
+            prefix
+            + ',"notes":"'
+            + encoded_credential
+            + '","notes":"safe"}'
+        )
+    elif scenario == "nested-shadowed-value":
+        raw = (
+            prefix
+            + ',"notes":"","unexpected":{"layers":[{"inner":{"item":"'
+            + encoded_credential
+            + '","item":"safe"}}]}}'
+        )
+    else:
+        second_key = credential if escaped else encoded_credential
+        raw = (
+            prefix
+            + ',"notes":"","unexpected":{"layers":[{"inner":{"'
+            + encoded_credential
+            + '":"first","'
+            + second_key
+            + '":"second"}}]}}'
+        )
+    payload = _json_input(raw, payload_type)
+
+    error = _assert_safe_value_error(
+        lambda: AttemptManifest.model_validate_json(payload),
+        (credential, encoded_credential, encoded_credential.replace("\\", "\\\\")),
+        match="Invalid JSON",
+    )
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+@pytest.mark.parametrize("payload_type", ["str", "bytes", "bytearray"])
+def test_public_json_boundary_rejects_safe_duplicate_keys(
+    payload_type: str,
+) -> None:
+    raw = (
+        '{"run_id":"first","r\\u0075n_id":"cpu-smoke","git_revision":"'
+        + "f" * 40
+        + '","config_hash":"'
+        + "a" * 64
+        + '","status":"passed","notes":""}'
+    )
+
+    error = _assert_safe_value_error(
+        lambda: AttemptManifest.model_validate_json(_json_input(raw, payload_type)),
+        ("first",),
+        match="Invalid JSON",
+    )
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
 def test_literal_unicode_escape_text_agrees_across_python_and_json() -> None:
     literal = "\\" + "u0061" + "k" + "-" + _SYNTHETIC_SUFFIX
     values = _valid_input()
@@ -549,7 +637,7 @@ def test_public_json_boundary_sanitizes_malformed_unicode_escaped_shapes(
     location: str, payload_type: str
 ) -> None:
     credential = _synthetic_credential()
-    escaped = "".join(f"\\u{ord(character):04x}" for character in credential)
+    escaped = _unicode_escape_every_character(credential)
     if location == "value":
         raw = '{"notes":"' + escaped
     else:

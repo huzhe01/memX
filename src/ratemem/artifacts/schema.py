@@ -32,6 +32,10 @@ _MANIFEST_FIELDS = frozenset(
 _MANIFEST_STATUSES = frozenset({"passed", "failed", "interrupted"})
 
 
+class _DuplicateJSONObjectKey(Exception):
+    pass
+
+
 def _safe_error(code: str, message: str) -> ValidationError:
     detail: InitErrorDetails = {
         "type": PydanticCustomError(code, message),
@@ -133,6 +137,17 @@ def _expand_json_unicode_escapes(value: str) -> str:
     )
 
 
+def _reject_duplicate_json_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    parsed: dict[str, object] = {}
+    for key, value in pairs:
+        if key in parsed:
+            raise _DuplicateJSONObjectKey
+        parsed[key] = value
+    return parsed
+
+
 class AttemptManifest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -172,11 +187,18 @@ class AttemptManifest(BaseModel):
         raw_text = _decode_json_input(json_data)
 
         parse_failed = False
+        duplicate_key = False
         parsed: object = None
         try:
-            parsed = json.loads(raw_text)
+            parsed = json.loads(
+                raw_text, object_pairs_hook=_reject_duplicate_json_keys
+            )
+        except _DuplicateJSONObjectKey:
+            duplicate_key = True
         except Exception:
             parse_failed = True
+        if duplicate_key:
+            raise _json_error()
         if parse_failed:
             _scan_canonical(raw_text)
             _scan_canonical(_expand_json_unicode_escapes(raw_text))
