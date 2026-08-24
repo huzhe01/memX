@@ -6,7 +6,10 @@ import json
 import numpy as np
 
 from ratemem.allocation.objective import CoverageOracle, PacketBundle
-from ratemem.allocation.snapshot import allocate_snapshot
+from ratemem.allocation.snapshot import (
+    allocate_snapshot,
+    prescreen_certified_oracle,
+)
 from ratemem.artifacts.schema import AttemptManifest
 from ratemem.codec.progressive import ProgressiveCodec
 from ratemem.lifecycle.events import CreateEvent, ProbeEvent
@@ -36,7 +39,8 @@ def smoke_core() -> dict[str, int | str]:
         {"concept-a": 1.0},
         {"concept-a": (1.0,)},
     )
-    chosen = allocate_snapshot(oracle, packet_bytes)
+    screened_oracle = prescreen_certified_oracle(oracle, packet_bytes)
+    chosen = allocate_snapshot(screened_oracle, packet_bytes)
     if chosen != frozenset({packet.packet_id}):
         raise RuntimeError(
             "snapshot allocator rejected the only feasible useful packet"

@@ -99,6 +99,36 @@ def test_smoke_runs_the_lifecycle_probe(monkeypatch: pytest.MonkeyPatch) -> None
         cli.smoke_core()
 
 
+def test_smoke_prescreens_before_certified_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    captured: dict[str, object] = {}
+    screened_oracle = object()
+
+    def fake_prescreen(oracle: Any, budget_bytes: int) -> object:
+        calls.append("prescreen")
+        captured["packet_id"] = next(iter(oracle.bundles))
+        captured["budget_bytes"] = budget_bytes
+        return screened_oracle
+
+    def fake_allocate(oracle: object, budget_bytes: int) -> frozenset[str]:
+        calls.append("allocate")
+        assert oracle is screened_oracle
+        assert budget_bytes == captured["budget_bytes"]
+        packet_id = captured["packet_id"]
+        assert isinstance(packet_id, str)
+        return frozenset({packet_id})
+
+    monkeypatch.setattr(
+        cli, "prescreen_certified_oracle", fake_prescreen, raising=False
+    )
+    monkeypatch.setattr(cli, "allocate_snapshot", fake_allocate)
+
+    assert cli.smoke_core() == _EXPECTED
+    assert calls == ["prescreen", "allocate"]
+
+
 def test_smoke_round_trips_the_attempt_manifest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
