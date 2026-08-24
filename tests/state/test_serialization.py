@@ -176,9 +176,10 @@ def test_decode_rejects_wrong_fixed_width_fields(payload: bytes) -> None:
         decode_state(payload)
 
 
-def test_decode_normalizes_malformed_cbor_to_value_error() -> None:
+@pytest.mark.parametrize("record", [b"\x84", b"\xff", b"\x81\xff"])
+def test_decode_normalizes_malformed_cbor_to_value_error(record: bytes) -> None:
     with pytest.raises(ValueError):
-        decode_state(_artifact(bases=(b"\x84",)))
+        decode_state(_artifact(bases=(record,)))
 
 
 def test_state_rejects_base_mapping_key_mismatch() -> None:

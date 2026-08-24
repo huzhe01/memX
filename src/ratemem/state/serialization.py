@@ -89,9 +89,10 @@ def encode_state(state: MemoryState) -> bytes:
 def _decode_canonical_row(payload: bytes) -> list[object]:
     try:
         decoded: object = cbor2.loads(payload)
-    except Exception as error:
+        canonical = cbor2.dumps(decoded, canonical=True)
+    except (cbor2.CBORDecodeError, cbor2.CBOREncodeError) as error:
         raise ValueError("invalid CBOR record") from error
-    if cbor2.dumps(decoded, canonical=True) != payload:
+    if canonical != payload:
         raise ValueError("record is not one canonical CBOR value")
     if not isinstance(decoded, list):
         raise ValueError("serialized record must be a list")
