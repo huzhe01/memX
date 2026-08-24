@@ -9,7 +9,11 @@ from hypothesis import strategies as st
 
 from ratemem.allocation.objective import CoverageOracle, PacketBundle
 from ratemem.allocation.oracle import exhaustive_optimum
-from ratemem.allocation.snapshot import allocate_density_greedy_heuristic, allocate_snapshot
+from ratemem.allocation.snapshot import (
+    allocate_density_greedy_heuristic,
+    allocate_snapshot,
+    prescreen_certified_oracle,
+)
 
 Allocator = Callable[[CoverageOracle, int], frozenset[str]]
 CERTIFIED_FACTOR_LOWER_BOUND = Fraction(6_321_205_588_285_576, 10**16)
@@ -151,6 +155,121 @@ def test_density_ranking_supports_integer_costs_beyond_float_range() -> None:
 
     assert chosen == frozenset({"z"})
     assert chosen == exhaustive_optimum(oracle, budget_bytes=huge_cost)
+
+
+def test_allocator_factor_on_rounding_adversarial_instance() -> None:
+    oracle = CoverageOracle(
+        bundles={
+            "a-exact": PacketBundle("a-exact", 1, {"a": (0.5, 2**-54)}),
+            "z-rounded": PacketBundle("z-rounded", 1, {"a": (0.5, 0.0)}),
+        },
+        request_weights={"a": 1.0},
+        group_weights={"a": (1.0, 1.0)},
+    )
+
+    assert oracle.value(frozenset({"a-exact"})) == oracle.value(
+        frozenset({"z-rounded"})
+    )
+    assert oracle.exact_value(frozenset({"a-exact"})) > oracle.exact_value(
+        frozenset({"z-rounded"})
+    )
+    assert tuple(
+        prescreen_certified_oracle(oracle, budget_bytes=1, max_bundles=1).bundles
+    ) == ("a-exact",)
+
+    chosen = allocate_snapshot(oracle, budget_bytes=1)
+    optimum = exhaustive_optimum(oracle, budget_bytes=1)
+
+    assert chosen == frozenset({"a-exact"})
+    _assert_certified_ratio(oracle, chosen, optimum)
+
+
+def test_prescreen_reduces_four_concepts_with_eight_packets_each() -> None:
+    concepts = tuple(f"concept-{index}" for index in range(4))
+    bundles = {
+        f"{concept}-packet-{packet_index}": PacketBundle(
+            f"{concept}-packet-{packet_index}",
+            cost_bytes=1,
+            gains={concept: ((packet_index + 1) / 8,)},
+        )
+        for concept in concepts
+        for packet_index in range(8)
+    }
+    oracle = CoverageOracle(
+        bundles,
+        request_weights={concept: 1.0 for concept in concepts},
+        group_weights={concept: (1.0,) for concept in concepts},
+    )
+
+    reduced = prescreen_certified_oracle(oracle, budget_bytes=4)
+    expected_ids = {
+        f"{concept}-packet-{packet_index}"
+        for concept in concepts
+        for packet_index in range(2, 8)
+    }
+
+    assert len(oracle.bundles) == 32
+    assert set(reduced.bundles) == expected_ids
+    assert len(reduced.bundles) == 24
+    assert set(prescreen_certified_oracle(oracle, 4).bundles) == expected_ids
+
+    chosen = allocate_snapshot(reduced, budget_bytes=4)
+    assert chosen <= expected_ids
+    assert reduced.cost(chosen) <= 4
+
+
+def test_prescreen_filters_infeasible_then_breaks_density_ties_by_larger_id() -> None:
+    oracle = CoverageOracle(
+        bundles={
+            "a": PacketBundle("a", 1, {"a": (0.5,)}),
+            "z": PacketBundle("z", 1, {"a": (0.5,)}),
+            "too-large": PacketBundle("too-large", 2, {"a": (1.0,)}),
+        },
+        request_weights={"a": 1.0},
+        group_weights={"a": (1.0,)},
+    )
+
+    reduced = prescreen_certified_oracle(oracle, budget_bytes=1, max_bundles=1)
+
+    assert tuple(reduced.bundles) == ("z",)
+
+
+@pytest.mark.parametrize("budget", [True, 1.0, "1"], ids=["bool", "float", "string"])
+def test_prescreen_budget_requires_an_exact_integer(budget: object) -> None:
+    with pytest.raises(TypeError, match="integer"):
+        prescreen_certified_oracle(
+            _single_group_oracle(("p",)), budget  # type: ignore[arg-type]
+        )
+
+
+def test_prescreen_budget_must_be_nonnegative() -> None:
+    with pytest.raises(ValueError, match="nonnegative"):
+        prescreen_certified_oracle(_single_group_oracle(("p",)), -1)
+
+
+@pytest.mark.parametrize("max_bundles", [True, 1.5, "24"], ids=["bool", "float", "string"])
+def test_prescreen_cap_requires_an_exact_integer(max_bundles: object) -> None:
+    with pytest.raises(TypeError, match="max_bundles.*integer"):
+        prescreen_certified_oracle(
+            _single_group_oracle(("p",)),
+            budget_bytes=1,
+            max_bundles=max_bundles,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("max_bundles", [0, -1])
+def test_prescreen_cap_must_be_positive(max_bundles: int) -> None:
+    with pytest.raises(ValueError, match="max_bundles.*positive"):
+        prescreen_certified_oracle(
+            _single_group_oracle(("p",)), budget_bytes=1, max_bundles=max_bundles
+        )
+
+
+def test_prescreen_cap_cannot_exceed_certified_default() -> None:
+    with pytest.raises(ValueError, match="cannot exceed.*24"):
+        prescreen_certified_oracle(
+            _single_group_oracle(("p",)), budget_bytes=1, max_bundles=25
+        )
 
 
 def _single_group_oracle(packet_ids: tuple[str, ...]) -> CoverageOracle:

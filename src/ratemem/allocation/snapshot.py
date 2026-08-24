@@ -30,6 +30,47 @@ def _validate_max_bundles(max_bundles: int) -> None:
         raise ValueError("max_bundles must be positive")
 
 
+def prescreen_certified_oracle(
+    oracle: CoverageOracle,
+    budget_bytes: int,
+    *,
+    max_bundles: int = DEFAULT_MAX_BUNDLES,
+) -> CoverageOracle:
+    """Return a bounded oracle selected only from a caller-provided causal ground set.
+
+    The certified ratio applies to this returned ground set, not to the input ground set.
+    """
+    _validate_budget(budget_bytes)
+    _validate_max_bundles(max_bundles)
+    if max_bundles > DEFAULT_MAX_BUNDLES:
+        raise ValueError(
+            f"prescreen max_bundles cannot exceed certified default "
+            f"{DEFAULT_MAX_BUNDLES}"
+        )
+
+    empty = frozenset[str]()
+    feasible = (
+        packet_id
+        for packet_id, bundle in oracle.bundles.items()
+        if bundle.cost_bytes <= budget_bytes
+    )
+    ranked = sorted(
+        feasible,
+        key=lambda packet_id: (
+            oracle.exact_marginal(empty, packet_id)
+            / oracle.bundles[packet_id].cost_bytes,
+            packet_id,
+        ),
+        reverse=True,
+    )
+    selected_ids = ranked[:max_bundles]
+    return CoverageOracle(
+        bundles={packet_id: oracle.bundles[packet_id] for packet_id in selected_ids},
+        request_weights=oracle.request_weights,
+        group_weights=oracle.group_weights,
+    )
+
+
 def _density_fill(
     oracle: CoverageOracle,
     seed: frozenset[str],
