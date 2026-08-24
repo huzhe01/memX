@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ratemem"
+version = "0.1.0"
+description = "Byte-bounded shared packet memory for image personalization"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "cbor2==5.7.0",
+  "numpy==2.2.6",
+  "pydantic==2.11.7",
+  "PyYAML==6.0.2",
+]
+
+[dependency-groups]
+dev = [
+  "hypothesis>=6.120,<7",
+  "mypy==1.17.1",
+  "pytest==8.4.1",
+  "ruff==0.12.11",
+]
+
+[project.scripts]
+ratemem = "ratemem.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ratemem"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["ratemem"]
+
+[[tool.mypy.overrides]]
+module = ["cbor2"]
+ignore_missing_imports = true
