@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from fractions import Fraction
 from numbers import Real
 from types import MappingProxyType
+
+ExactCoverage = dict[tuple[str, int], Fraction]
 
 
 def _nonempty_id(value: object, label: str) -> str:
@@ -71,6 +74,12 @@ class CoverageOracle:
     bundles: Mapping[str, PacketBundle]
     request_weights: Mapping[str, float]
     group_weights: Mapping[str, tuple[float, ...]]
+    _exact_gains: Mapping[str, Mapping[str, tuple[Fraction, ...]]] = field(
+        init=False, repr=False, compare=False
+    )
+    _exact_coefficients: Mapping[str, tuple[Fraction, ...]] = field(
+        init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         raw_bundles: object = self.bundles
@@ -115,19 +124,52 @@ class CoverageOracle:
                 if len(gains) > len(normalized_group_weights[handle]):
                     raise ValueError(f"packet gain exceeds group width: {handle}")
 
-        coefficients = []
+        exact_gains: dict[str, Mapping[str, tuple[Fraction, ...]]] = {}
+        for packet_id, bundle in normalized_bundles.items():
+            exact_gains[packet_id] = MappingProxyType(
+                {
+                    handle: tuple(Fraction.from_float(gain) for gain in gains)
+                    for handle, gains in bundle.gains.items()
+                }
+            )
+
+        exact_coefficients: dict[str, tuple[Fraction, ...]] = {}
         for handle, weight in normalized_request_weights.items():
+            exact_weight = Fraction.from_float(weight)
+            handle_coefficients = []
             for beta in normalized_group_weights[handle]:
-                coefficient = weight * beta
-                if not math.isfinite(coefficient):
-                    raise ValueError("oracle coefficient must be finite")
-                coefficients.append(coefficient)
+                coefficient = exact_weight * Fraction.from_float(beta)
+                try:
+                    reporting_coefficient = float(coefficient)
+                except OverflowError as error:
+                    raise ValueError(
+                        "oracle coefficient must be representable as a finite float for reporting"
+                    ) from error
+                if not math.isfinite(reporting_coefficient):
+                    raise ValueError(
+                        "oracle coefficient must be representable as a finite float for reporting"
+                    )
+                handle_coefficients.append(coefficient)
+            exact_coefficients[handle] = tuple(handle_coefficients)
+
+        maximum_objective = sum(
+            (
+                coefficient
+                for coefficients in exact_coefficients.values()
+                for coefficient in coefficients
+            ),
+            start=Fraction(),
+        )
         try:
-            maximum_objective = math.fsum(coefficients)
+            reporting_maximum = float(maximum_objective)
         except OverflowError as error:
-            raise ValueError("maximum objective mass must be finite") from error
-        if not math.isfinite(maximum_objective):
-            raise ValueError("maximum objective mass must be finite")
+            raise ValueError(
+                "maximum objective mass must be representable as a finite float for reporting"
+            ) from error
+        if not math.isfinite(reporting_maximum):
+            raise ValueError(
+                "maximum objective mass must be representable as a finite float for reporting"
+            )
 
         object.__setattr__(
             self,
@@ -144,6 +186,16 @@ class CoverageOracle:
             "group_weights",
             MappingProxyType(dict(sorted(normalized_group_weights.items()))),
         )
+        object.__setattr__(
+            self,
+            "_exact_gains",
+            MappingProxyType(dict(sorted(exact_gains.items()))),
+        )
+        object.__setattr__(
+            self,
+            "_exact_coefficients",
+            MappingProxyType(dict(sorted(exact_coefficients.items()))),
+        )
 
     def _selected_ids(self, selected: frozenset[str]) -> tuple[str, ...]:
         selected_ids = tuple(sorted(selected))
@@ -151,43 +203,68 @@ class CoverageOracle:
             self.bundles[packet_id]
         return selected_ids
 
-    def _coverage(
-        self, selected_ids: tuple[str, ...], handle: str, group: int
-    ) -> float:
-        gains = []
-        for packet_id in selected_ids:
-            vector = self.bundles[packet_id].gains.get(handle, ())
-            if group < len(vector):
-                gain = vector[group]
-                if gain >= 1.0:
-                    return 1.0
-                gains.append(gain)
-        return min(1.0, math.fsum(gains))
+    def _empty_exact_coverage(self) -> ExactCoverage:
+        return {
+            (handle, group): Fraction()
+            for handle, coefficients in self._exact_coefficients.items()
+            for group in range(len(coefficients))
+        }
+
+    def _add_exact_gains(self, coverage: ExactCoverage, item: str) -> None:
+        for handle, gains in self._exact_gains[item].items():
+            for group, gain in enumerate(gains):
+                key = (handle, group)
+                coverage[key] = min(Fraction(1), coverage[key] + gain)
+
+    def _exact_coverage(self, selected_ids: tuple[str, ...]) -> ExactCoverage:
+        coverage = self._empty_exact_coverage()
+        for item in selected_ids:
+            self._add_exact_gains(coverage, item)
+        return coverage
+
+    def _exact_value_from_coverage(self, coverage: Mapping[tuple[str, int], Fraction]) -> Fraction:
+        return sum(
+            (
+                coefficient * coverage[(handle, group)]
+                for handle, coefficients in self._exact_coefficients.items()
+                for group, coefficient in enumerate(coefficients)
+            ),
+            start=Fraction(),
+        )
+
+    def _exact_marginal_from_coverage(
+        self, coverage: Mapping[tuple[str, int], Fraction], item: str
+    ) -> Fraction:
+        terms = []
+        bundle_gains = self._exact_gains[item]
+        for handle, coefficients in self._exact_coefficients.items():
+            item_gains = bundle_gains.get(handle, ())
+            for group, coefficient in enumerate(coefficients):
+                item_gain = item_gains[group] if group < len(item_gains) else Fraction()
+                remaining = Fraction(1) - coverage[(handle, group)]
+                terms.append(coefficient * min(remaining, item_gain))
+        return sum(terms, start=Fraction())
+
+    def exact_value(self, selected: frozenset[str]) -> Fraction:
+        """Return certified utility over the exact binary-rational normalized inputs."""
+        selected_ids = self._selected_ids(selected)
+        return self._exact_value_from_coverage(self._exact_coverage(selected_ids))
+
+    def exact_marginal(self, selected: frozenset[str], item: str) -> Fraction:
+        """Return a direct exact marginal without subtracting rounded reporting values."""
+        selected_ids = self._selected_ids(selected)
+        self.bundles[item]
+        if item in selected:
+            return Fraction()
+        return self._exact_marginal_from_coverage(self._exact_coverage(selected_ids), item)
 
     def value(self, selected: frozenset[str]) -> float:
-        selected_ids = self._selected_ids(selected)
-        terms = []
-        for handle, weight in self.request_weights.items():
-            for group, beta in enumerate(self.group_weights[handle]):
-                terms.append(
-                    weight * beta * self._coverage(selected_ids, handle, group)
-                )
-        return math.fsum(terms)
+        """Return a rounded float report; certification uses exact_value instead."""
+        return float(self.exact_value(selected))
 
     def marginal(self, selected: frozenset[str], item: str) -> float:
-        selected_ids = self._selected_ids(selected)
-        bundle = self.bundles[item]
-        if item in selected:
-            return 0.0
-
-        terms = []
-        for handle, weight in self.request_weights.items():
-            item_gains = bundle.gains.get(handle, ())
-            for group, beta in enumerate(self.group_weights[handle]):
-                item_gain = item_gains[group] if group < len(item_gains) else 0.0
-                remaining = 1.0 - self._coverage(selected_ids, handle, group)
-                terms.append(weight * beta * min(remaining, item_gain))
-        return math.fsum(terms)
+        """Return a rounded float report; certification uses exact_marginal instead."""
+        return float(self.exact_marginal(selected, item))
 
     def cost(self, selected: frozenset[str]) -> int:
         return sum(

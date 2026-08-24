@@ -1,6 +1,7 @@
 from fractions import Fraction
 from itertools import combinations
 
+import numpy as np
 import pytest
 
 from ratemem.allocation.objective import CoverageOracle, PacketBundle
@@ -298,3 +299,63 @@ def test_oracle_rejects_nonfinite_total_maximum_objective_mass() -> None:
             request_weights={"a": 1e308, "b": 1e308},
             group_weights={"a": (1.0,), "b": (1.0,)},
         )
+
+
+def test_exact_objective_preserves_underflowed_multigroup_coefficients() -> None:
+    smallest_subnormal = 5e-324
+    oracle = CoverageOracle(
+        bundles={"p": PacketBundle("p", 1, {"a": (0.5,) * 5})},
+        request_weights={"a": smallest_subnormal},
+        group_weights={"a": (1.0,) * 5},
+    )
+    selected = frozenset({"p"})
+    exact_tiny = Fraction.from_float(smallest_subnormal)
+
+    assert oracle.exact_value(selected) == 5 * exact_tiny / 2
+    assert oracle.exact_marginal(frozenset(), "p") == 5 * exact_tiny / 2
+    assert isinstance(oracle.exact_value(selected), Fraction)
+    assert isinstance(oracle.exact_marginal(frozenset(), "p"), Fraction)
+
+
+def test_exact_objective_is_submodular_when_reporting_rounding_is_not() -> None:
+    above_half = float(np.nextafter(0.5, 1.0))
+    oracle = CoverageOracle(
+        bundles={
+            "below-half": PacketBundle("below-half", 1, {"a": (1.0 - above_half,)}),
+            "half": PacketBundle("half", 1, {"a": (0.5,)}),
+            "small": PacketBundle("small", 1, {"a": (2**-54,)}),
+        },
+        request_weights={"a": 1.0},
+        group_weights={"a": (1.0,)},
+    )
+    left = frozenset({"below-half"})
+    right = frozenset({"half", "small"})
+    union = left | right
+    intersection = left & right
+
+    assert oracle.value(left) + oracle.value(right) < (
+        oracle.value(union) + oracle.value(intersection)
+    )
+    assert oracle.exact_value(left) + oracle.exact_value(right) >= (
+        oracle.exact_value(union) + oracle.exact_value(intersection)
+    )
+    assert oracle.exact_marginal(left, "small") == (
+        oracle.exact_value(left | {"small"}) - oracle.exact_value(left)
+    )
+
+
+def test_exact_objective_keeps_unusual_packet_ids_distinct() -> None:
+    packet_ids = ("nul\x00packet", "path/packet", "snowman-☃")
+    oracle = CoverageOracle(
+        bundles={
+            packet_id: PacketBundle(packet_id, 1, {"a": (0.25,)})
+            for packet_id in packet_ids
+        },
+        request_weights={"a": 1.0},
+        group_weights={"a": (1.0,)},
+    )
+
+    assert oracle.exact_value(frozenset(packet_ids)) == Fraction(3, 4)
+    assert oracle.exact_marginal(frozenset({packet_ids[0]}), packet_ids[1]) == Fraction(
+        1, 4
+    )
