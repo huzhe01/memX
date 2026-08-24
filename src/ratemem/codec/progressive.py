@@ -100,9 +100,14 @@ class EncodedCode:
         )
         if not np.all(np.isfinite(half_values)):
             raise ValueError("base payload values must be finite")
+        half_array = half_values.reshape(self.shape, order="C")
+        canonical_stream = io.BytesIO()
+        np.save(canonical_stream, half_array, allow_pickle=False)
+        if canonical_stream.getvalue() != self.base_payload:
+            raise ValueError("base payload bytes are not canonical")
         return cast(
             FloatArray,
-            half_values.reshape(self.shape, order="C").astype(np.float32),
+            half_array.astype(np.float32),
         )
 
     def _validated_residuals(self, packet_count: int) -> tuple[FloatArray, ...]:

@@ -259,6 +259,31 @@ def test_base_payload_rejects_trailing_bytes() -> None:
         replace(encoded, base_payload=encoded.base_payload + b"trailing").decode(0)
 
 
+def test_base_payload_requires_canonical_npy_header_bytes() -> None:
+    encoded = ProgressiveCodec(group_size=3).encode(
+        "base-canonical", np.arange(7, dtype=np.float32)
+    )
+    header_size = struct.unpack("<H", encoded.base_payload[8:10])[0]
+    header_start = 10
+    header_end = header_start + header_size
+    header = encoded.base_payload[header_start:header_end]
+    assert b", }" in header
+    assert header.endswith(b" \n")
+
+    widened_dict = header.replace(b", }", b",  }", 1)
+    noncanonical_header = widened_dict[:-2] + widened_dict[-1:]
+    assert len(noncanonical_header) == len(header)
+    noncanonical = (
+        encoded.base_payload[:header_start]
+        + noncanonical_header
+        + encoded.base_payload[header_end:]
+    )
+    assert len(noncanonical) == len(encoded.base_payload)
+
+    with pytest.raises(ValueError, match="canonical"):
+        replace(encoded, base_payload=noncanonical).decode(0)
+
+
 def test_base_payload_requires_float16_dtype() -> None:
     encoded = ProgressiveCodec(group_size=3).encode("base-dtype", np.arange(7, dtype=np.float32))
     wrong_dtype = _npy_payload(np.arange(7, dtype=np.float32))
