@@ -12,6 +12,43 @@ from ratemem.lifecycle.events import (
 from ratemem.lifecycle.replay import replay
 from ratemem.state.store import PacketStore
 
+
+class _SpoofedStringType:
+    @property
+    def __class__(self) -> type[str]:
+        return str
+
+    def __bool__(self) -> bool:
+        return True
+
+
+class _HashChangingString(str):
+    def __new__(cls, value: str):
+        instance = super().__new__(cls, value)
+        instance._runtime_hash = super(_HashChangingString, instance).__hash__()
+        return instance
+
+    def change_hash(self) -> None:
+        self._runtime_hash += 1
+
+    def __hash__(self) -> int:
+        return self._runtime_hash
+
+
+class _UnsafeCreateEvent(CreateEvent):
+    def __post_init__(self) -> None:
+        pass
+
+
+class _UnsafeUpdateEvent(UpdateEvent):
+    def __post_init__(self) -> None:
+        pass
+
+
+class _ReadEventSubclass(ReadEvent):
+    pass
+
+
 _EVENT_FACTORIES = (
     pytest.param(
         lambda event_id, handle: CreateEvent(event_id, handle, b"payload"),
@@ -69,8 +106,32 @@ def test_payload_events_own_mutable_bytes_like_values(
     [
         pytest.param("event_id", "", ValueError, id="empty-event-id"),
         pytest.param("event_id", 1, TypeError, id="non-string-event-id"),
+        pytest.param(
+            "event_id",
+            _SpoofedStringType(),
+            TypeError,
+            id="spoofed-string-event-id",
+        ),
+        pytest.param(
+            "event_id",
+            _HashChangingString("event"),
+            TypeError,
+            id="str-subclass-event-id",
+        ),
         pytest.param("handle", "", ValueError, id="empty-handle"),
         pytest.param("handle", 1, TypeError, id="non-string-handle"),
+        pytest.param(
+            "handle",
+            _SpoofedStringType(),
+            TypeError,
+            id="spoofed-string-handle",
+        ),
+        pytest.param(
+            "handle",
+            _HashChangingString("handle"),
+            TypeError,
+            id="str-subclass-handle",
+        ),
     ],
 )
 def test_events_require_nonempty_string_identities(
@@ -81,6 +142,40 @@ def test_events_require_nonempty_string_identities(
 
     with pytest.raises(error_type, match=f"{field} must be a nonempty string"):
         factory(**arguments)
+
+
+def test_hash_changing_string_reproduction_changes_after_construction() -> None:
+    identity = _HashChangingString("identity")
+    original_hash = hash(identity)
+
+    identity.change_hash()
+
+    assert hash(identity) != original_hash
+
+
+@pytest.mark.parametrize(
+    ("event_type", "type_name"),
+    [
+        pytest.param(_UnsafeCreateEvent, "_UnsafeCreateEvent", id="create"),
+        pytest.param(_UnsafeUpdateEvent, "_UnsafeUpdateEvent", id="update"),
+    ],
+)
+def test_replay_rejects_payload_event_subclasses_with_mutable_payload(
+    event_type, type_name: str
+) -> None:
+    source = bytearray(b"old")
+    event = event_type("1", "a", source)
+    assert event.base_payload is source
+
+    source[:] = b"new"
+
+    with pytest.raises(TypeError, match=f"unsupported event: {type_name}"):
+        replay((event,), budget_bytes=2048)
+
+
+def test_replay_rejects_nonpayload_event_subclass() -> None:
+    with pytest.raises(TypeError, match="unsupported event: _ReadEventSubclass"):
+        replay((_ReadEventSubclass("1", "a"),), budget_bytes=2048)
 
 
 def test_probe_does_not_refresh_usage_or_change_bytes() -> None:

@@ -4,7 +4,7 @@ from typing import TypeAlias
 
 def _validate_identity(event_id: object, handle: object) -> None:
     for name, value in (("event_id", event_id), ("handle", handle)):
-        if not isinstance(value, str):
+        if type(value) is not str:
             raise TypeError(f"{name} must be a nonempty string")
         if not value:
             raise ValueError(f"{name} must be a nonempty string")

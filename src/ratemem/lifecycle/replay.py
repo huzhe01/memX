@@ -26,7 +26,7 @@ def replay(events: tuple[LifecycleEvent, ...], budget_bytes: int) -> ReplayResul
     probes: list[int] = []
     errors: list[str] = []
     for index, event in enumerate(events):
-        if isinstance(event, CreateEvent):
+        if type(event) is CreateEvent:
             if event.handle in store.state.bases:
                 errors.append(f"{event.event_id}:duplicate-handle:{event.handle}")
                 continue
@@ -34,25 +34,25 @@ def replay(events: tuple[LifecycleEvent, ...], budget_bytes: int) -> ReplayResul
                 store = store.create(event.handle, event.base_payload, created_at=index)
             except BudgetExceeded:
                 errors.append(f"{event.event_id}:budget-exceeded:{event.handle}")
-        elif isinstance(event, ReadEvent):
+        elif type(event) is ReadEvent:
             try:
                 store, _ = store.read(event.handle, update_usage=True)
             except KeyError:
                 errors.append(f"{event.event_id}:stale-handle:{event.handle}")
-        elif isinstance(event, UpdateEvent):
+        elif type(event) is UpdateEvent:
             try:
                 store = store.replace(event.handle, event.base_payload, attachments=())
             except KeyError:
                 errors.append(f"{event.event_id}:stale-handle:{event.handle}")
             except BudgetExceeded:
                 errors.append(f"{event.event_id}:budget-exceeded:{event.handle}")
-        elif isinstance(event, ProbeEvent):
+        elif type(event) is ProbeEvent:
             try:
                 snapshot, _ = store.read(event.handle, update_usage=False)
                 probes.append(snapshot.state.serialized_bytes)
             except KeyError:
                 errors.append(f"{event.event_id}:stale-handle:{event.handle}")
-        elif isinstance(event, DeleteEvent):
+        elif type(event) is DeleteEvent:
             try:
                 store = store.delete(event.handle)
             except KeyError:
