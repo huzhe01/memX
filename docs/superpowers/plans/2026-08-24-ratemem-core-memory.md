@@ -261,7 +261,9 @@ exact non-boolean budgets; exact handle and creation-counter inputs; forged pack
 incidences, orphan packets, and record subclasses; atomic duplicate replacement and identity
 mismatch failures; exact-budget acceptance and one-byte-under rejection; functional create/read/
 replace/delete operations; uint64 read overflow; idempotent duplicate attachment; shared-packet
-reclamation; and canonical round trips after every accepted transition.
+reclamation; canonical round trips after every accepted transition; and deep-snapshot isolation
+from caller-owned backing mappings and record objects, including post-construction adversarial
+mutation.
 
 - [ ] **Step 2: Verify constructor and transition validation**
 
@@ -270,7 +272,10 @@ accepts only an exact `MemoryState`, an exact built-in integer byte budget, a fu
 content-addressed packet set, no dangling incidence, and no orphan packet. Operations accepting a
 handle apply the exact built-in nonempty-string rule before lookup. Packet and incidence inputs are
 exact record instances, attachments agree with the operation identities, and replacement rejects
-duplicate packet attachments before producing state.
+duplicate packet attachments before producing state. After validation, construction deep-copies
+the accepted state into fresh exact records and fresh owned mappings, revalidates that canonical
+snapshot, and stores the snapshot rather than the caller object. Mutating a caller's original
+mapping or record through a low-level escape hatch after construction must not affect the store.
 
 - [ ] **Step 3: Verify functional atomicity and exact accounting**
 
@@ -278,7 +283,9 @@ Every accepted transition returns a newly checked store except the declared func
 Every rejected transition leaves the old store unchanged. Create, attach/bundle, replace,
 usage-updating read, and delete all flow through the same constructor validation and exact
 `serialized_bytes` budget check. Shared packets remain until their last incidence is removed;
-orphan packets never persist.
+orphan packets never persist. Every accepted constructor or transition state must satisfy
+`decode_state(encode_state(store.state)) == store.state`, reproduce the same encoded bytes, and be
+independent of all caller-owned mutable backing objects.
 
 - [ ] **Step 4: Run the complete state gate and commit**
 
@@ -412,7 +419,16 @@ def test_coverage_is_normalized_monotone_and_submodular() -> None:
 
 def test_one_payload_can_benefit_two_concepts() -> None:
     oracle = _oracle()
-    assert oracle.exact_value(frozenset({"shared"})) == Fraction(2)
+    expected = (
+        Fraction.from_float(2.0)
+        * Fraction.from_float(1.0)
+        * Fraction.from_float(0.7)
+        + Fraction.from_float(1.0)
+        * Fraction.from_float(1.0)
+        * Fraction.from_float(0.6)
+    )
+    assert expected == Fraction(2) - Fraction(1, 2**53)
+    assert oracle.exact_value(frozenset({"shared"})) == expected
 
 
 def test_float_methods_are_reporting_views_of_exact_methods() -> None:
@@ -1448,8 +1464,10 @@ measured state-length increment for a fixed admitted cohort. Base, packet, and i
 fields are exact built-in nonempty strings. Base read/creation counters are exact built-in uint64
 integers and incidence gains are exact built-in int16 integers; booleans, subclasses, proxies, and
 noncanonical state mapping keys are rejected. Raw Packet construction does not certify its hash;
-PacketStore transitions and decode_state enforce the packet-ID-to-payload relation. Probe reads
-never update usage.
+PacketStore transitions and decode_state enforce the packet-ID-to-payload relation. PacketStore
+deep-snapshots every validated input state into fresh canonical records and owned mappings before
+commit, so later mutation of caller-owned backing mappings or records cannot alter stored state.
+Probe reads never update usage.
 Certified gains, group weights, request weights, and bundle costs are nonnegative. The release path
 causally pre-screens in descending exact singleton-density order. Its exact non-boolean integer cap
 must satisfy `1 <= max_bundles <= 24`; values above 24 are rejected. The certified ratio is relative

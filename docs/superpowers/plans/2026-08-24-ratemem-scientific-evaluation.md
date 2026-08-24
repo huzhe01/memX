@@ -1099,6 +1099,12 @@ claims:
     inference_unit: allocator_instance
     required_controls: [exact_reduced_set_optimum]
     ground_set_scope: causal_singleton_density_prescreen_C_t_max24
+    allocator_boundary:
+      fixture_id: four_concepts_eight_packets_each_v1
+      proposal_count: 32
+      prescreen_input_count: 32
+      allocator_input_count: 24
+      deterministic_tie_break: lexicographically_larger_packet_id_wins
     pass_rule: proof_and_exhaustive_reduced_set_instance_certificate
   optimization_free_tradeoff:
     primary_endpoint: identity
@@ -1175,6 +1181,44 @@ def test_allocator_guarantee_lock_requires_reduced_ground_set_scope(
     )
     with pytest.raises(EvaluationLockError, match="allocator guarantee ground-set scope"):
         freeze_evaluation_lock(valid_draft)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("proposal_count", 31),
+        ("prescreen_input_count", 31),
+        ("allocator_input_count", 25),
+        (
+            "deterministic_tie_break",
+            "lexicographically_smaller_packet_id_wins",
+        ),
+    ],
+)
+def test_allocator_guarantee_lock_requires_exact_controller_boundary(
+    valid_draft: EvaluationLockDraft, field: str, value: object
+) -> None:
+    claim = valid_draft.claims["allocator_guarantee"]
+    assert claim.allocator_boundary is not None
+    changed_boundary = claim.allocator_boundary.model_copy(update={field: value})
+    valid_draft.claims["allocator_guarantee"] = claim.model_copy(
+        update={"allocator_boundary": changed_boundary}
+    )
+
+    with pytest.raises(EvaluationLockError, match="allocator boundary"):
+        freeze_evaluation_lock(valid_draft)
+
+
+def test_allocator_guarantee_lock_rejects_missing_controller_boundary(
+    valid_draft: EvaluationLockDraft,
+) -> None:
+    claim = valid_draft.claims["allocator_guarantee"]
+    valid_draft.claims["allocator_guarantee"] = claim.model_copy(
+        update={"allocator_boundary": None}
+    )
+
+    with pytest.raises(EvaluationLockError, match="allocator boundary"):
+        freeze_evaluation_lock(valid_draft)
 ```
 
 - [ ] **Step 3: Run the evaluation-lock tests and verify failure**
@@ -1189,6 +1233,17 @@ Expected: collection fails because `ratemem.evaluation.evaluation_lock` does not
 from ratemem.evaluation.types import Sha256
 
 
+class AllocatorBoundaryLock(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    fixture_id: Literal["four_concepts_eight_packets_each_v1"]
+    proposal_count: Literal[32]
+    prescreen_input_count: Literal[32]
+    allocator_input_count: Literal[24]
+    deterministic_tie_break: Literal[
+        "lexicographically_larger_packet_id_wins"
+    ]
+
+
 class ClaimLock(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     primary_endpoint: str
@@ -1199,6 +1254,7 @@ class ClaimLock(BaseModel):
     ground_set_scope: Literal[
         "causal_singleton_density_prescreen_C_t_max24"
     ] | None = None
+    allocator_boundary: AllocatorBoundaryLock | None = None
 
 
 class EvaluatorLock(BaseModel):
@@ -1265,8 +1321,12 @@ strongest-eligible-control selector, and Task 8's pre-lock source/fidelity/proto
 receipt. It additionally requires the `allocator_guarantee` claim to name
 `exact_reduced_set_optimum` and the exact non-null
 `ground_set_scope=causal_singleton_density_prescreen_C_t_max24`; a missing field or any full-`G_t`
-scope is rejected. It rejects any learned shared-input materialization or validation search outcome
-at this stage and instead binds the required post-lock receipt types.
+scope is rejected. The same claim must carry the exact `AllocatorBoundaryLock` above, freezing the
+learned-controller regression at `proposal_count=32`, `prescreen_input_count=32`, and
+`allocator_input_count=24`, with deterministic exact-density ties specified as
+`lexicographically_larger_packet_id_wins` (lexicographically larger packet ID wins). Other claims
+must leave `allocator_boundary` null. It rejects any learned shared-input materialization or
+validation search outcome at this stage and instead binds the required post-lock receipt types.
 
 Add `require_scientific_training_lock(dataset_lock: Path, evaluation_lock: Path, requested_split: str) -> None` and call it from the scientific training entry point. It accepts only `train`, verifies both lock schemas/hashes, and rejects a launch if the evaluation lock is absent, unsigned, or newer inputs have invalidated it.
 
@@ -2830,6 +2890,7 @@ git commit -m "feat(eval): publish artifact-backed paper release"
 **Files:**
 - Create: `src/ratemem/evaluation/gates.py`
 - Create: `schemas/scientific-gates.schema.json`
+- Create: `schemas/scientific-allocator-guarantee-evidence.schema.json`
 - Test: `tests/unit/evaluation/test_gates.py`
 - Test: `tests/integration/evaluation/test_final_evaluation.py`
 
@@ -2854,20 +2915,67 @@ def test_empirical_allocator_gate_does_not_depend_on_theorem_status() -> None:
 
 
 def test_allocator_guarantee_rejects_full_candidate_pool_scope() -> None:
+    boundary = allocator_boundary_evidence(
+        primary_endpoint="certified_reduced_set_approximation_ratio",
+        fixture_id="four_concepts_eight_packets_each_v1",
+        proposal_count=32,
+        prescreen_input_count=32,
+        allocator_input_count=24,
+        deterministic_tie_break="lexicographically_larger_packet_id_wins",
+    )
     reduced = allocator_guarantee_evidence(
         certified=True,
         comparator_source="exact_reduced_set_optimum",
         ground_set_scope="causal_singleton_density_prescreen_C_t_max24",
+        boundary=boundary,
     )
     assert evaluate_allocator_guarantee_gate(reduced).status == GateStatus.PASS
     full_pool = allocator_guarantee_evidence(
         certified=True,
         comparator_source="exact_reduced_set_optimum",
         ground_set_scope="full_G_t",
+        boundary=boundary,
     )
     result = evaluate_allocator_guarantee_gate(full_pool)
     assert result.status == GateStatus.FAIL
     assert result.reason_code == "ALLOCATOR_GROUND_SET_SCOPE_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason_code"),
+    [
+        ("proposal_count", 31, "ALLOCATOR_BOUNDARY_COUNT_MISMATCH"),
+        ("prescreen_input_count", 31, "ALLOCATOR_BOUNDARY_COUNT_MISMATCH"),
+        ("allocator_input_count", 25, "ALLOCATOR_BOUNDARY_COUNT_MISMATCH"),
+        (
+            "deterministic_tie_break",
+            "lexicographically_smaller_packet_id_wins",
+            "ALLOCATOR_TIE_BREAK_MISMATCH",
+        ),
+    ],
+)
+def test_allocator_guarantee_requires_the_locked_32_to_24_boundary(
+    field: str, value: object, reason_code: str
+) -> None:
+    boundary = allocator_boundary_evidence(
+        primary_endpoint="certified_reduced_set_approximation_ratio",
+        fixture_id="four_concepts_eight_packets_each_v1",
+        proposal_count=32,
+        prescreen_input_count=32,
+        allocator_input_count=24,
+        deterministic_tie_break="lexicographically_larger_packet_id_wins",
+    ).model_copy(update={field: value})
+    evidence = allocator_guarantee_evidence(
+        certified=True,
+        comparator_source="exact_reduced_set_optimum",
+        ground_set_scope="causal_singleton_density_prescreen_C_t_max24",
+        boundary=boundary,
+    )
+
+    result = evaluate_allocator_guarantee_gate(evidence)
+
+    assert result.status == GateStatus.FAIL
+    assert result.reason_code == reason_code
 
 
 def test_empirical_allocator_gate_fails_only_on_empirical_conditions() -> None:
@@ -2910,6 +3018,27 @@ class GateStatus(str, Enum):
 from ratemem.evaluation.types import Sha256
 
 
+class AllocatorBoundaryEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    primary_endpoint: Literal["certified_reduced_set_approximation_ratio"]
+    fixture_id: Literal["four_concepts_eight_packets_each_v1"]
+    proposal_count: NonNegativeInt
+    prescreen_input_count: NonNegativeInt
+    allocator_input_count: NonNegativeInt
+    deterministic_tie_break: str
+
+
+class AllocatorGuaranteeEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    certified: bool
+    comparator_source: str
+    ground_set_scope: str
+    boundary: AllocatorBoundaryEvidence
+    controller_boundary_receipt_sha256: Sha256
+    proof_artifact_sha256: Sha256
+    reduced_set_instance_certificate_sha256: Sha256
+
+
 class GateResult(BaseModel):
     gate_id: str
     required: bool
@@ -2930,9 +3059,20 @@ Implement these predicates exactly:
    `ground_set_scope=causal_singleton_density_prescreen_C_t_max24` and compare only with the exact
    optimum on that same reduced `C_t`. That scope removes individually infeasible bundles, sorts
    the rest by descending exact singleton density, and retains the highest-density 24 with locked
-   packet-ID ties. The mechanically checked proof artifact must match the exact locked
-   binary-rational surrogate and assumptions; every exhaustive/random reduced-set instance must be
-   feasible; and exact utilities must pass the cross-multiplied rational lower bound
+   ties for which the lexicographically larger packet ID wins. Its schema-validated boundary
+   evidence must record `primary_endpoint=certified_reduced_set_approximation_ratio`,
+   `fixture_id=four_concepts_eight_packets_each_v1`, `proposal_count=32`,
+   `prescreen_input_count=32`, `allocator_input_count=24`, and
+   `deterministic_tie_break=lexicographically_larger_packet_id_wins`. A missing field is
+   `blocked`; a count mismatch fails with `ALLOCATOR_BOUNDARY_COUNT_MISMATCH`; and any other tie
+   rule fails with `ALLOCATOR_TIE_BREAK_MISMATCH`. Hash the validated
+   `AllocatorGuaranteeEvidence` into `GateResult.evidence_sha256`; do not reconstruct these counts
+   from prose or accept a hand-written gate row. The controller-boundary receipt must be produced by
+   the learned-method plan's `four_concept_32_bundle_case`, bind its exact test-command and clean
+   implementation revision, and record the proposal, prescreen-call, and allocator-call counts that
+   populate the three evidence fields. The mechanically checked proof artifact must match the exact
+   locked binary-rational surrogate and assumptions; every exhaustive/random reduced-set instance
+   must be feasible; and exact utilities must pass the cross-multiplied rational lower bound
    `6321205588285576 / 10**16`, strictly below `1 - 1/e`, with no additive epsilon. The gate confers
    no ratio against full `G_t`; full-pool pre-screen loss remains empirical. Otherwise the
    theoretical claim is disabled.
@@ -3006,14 +3146,17 @@ uv run ratemem-eval gates evaluate \
 
 Expected: one explicit `pass`, `fail`, or `blocked` row per prespecified gate and `paper_disposition` printed. The command exits 0 when every required gate was evaluated to `pass` or `fail`, and exits 2 when any required gate is `blocked`; failed scientific hypotheses remain valid evaluated outputs and are not deleted.
 
-- [ ] **Step 9: Generate schema, run tests, and commit code only**
+- [ ] **Step 9: Generate schemas, run tests, and commit code only**
 
-Run: `uv run ratemem-eval gates schema --output schemas/scientific-gates.schema.json && uv run pytest tests/unit/evaluation/test_gates.py tests/integration/evaluation/test_final_evaluation.py -q`
+Run: `uv run ratemem-eval gates schema --output schemas/scientific-gates.schema.json && uv run ratemem-eval gates evidence-schema --output schemas/scientific-allocator-guarantee-evidence.schema.json && uv run pytest tests/unit/evaluation/test_gates.py tests/integration/evaluation/test_final_evaluation.py -q`
 
-Expected: all tests pass, including atomic second-open rejection and every gate boundary.
+Expected: both schemas are generated from the exact Pydantic models; the allocator evidence schema
+requires the endpoint, fixture, three counts, deterministic tie rule, controller-boundary receipt,
+proof, and reduced-set certificate. All tests pass, including atomic second-open rejection and
+every gate boundary.
 
 ```bash
-git add src/ratemem/evaluation/gates.py schemas/scientific-gates.schema.json tests/unit/evaluation/test_gates.py tests/integration/evaluation/test_final_evaluation.py
+git add src/ratemem/evaluation/gates.py schemas/scientific-gates.schema.json schemas/scientific-allocator-guarantee-evidence.schema.json tests/unit/evaluation/test_gates.py tests/integration/evaluation/test_final_evaluation.py
 git commit -m "feat(eval): enforce scientific falsification gates"
 ```
 

@@ -58,6 +58,13 @@ looking up state.
 mapping copies. The raw `Packet` and `MemoryState` constructors do not themselves verify content
 hashes. `packet_from_payload` creates a SHA-256 ID from the owned payload; `PacketStore`
 construction and transitions, plus `decode_state`, enforce that ID-to-payload relationship.
+After validating the caller-supplied state, `PacketStore` takes a deep canonical snapshot into
+fresh exact `BaseRecord`, `Packet`, and `Incidence` values and fresh owned mappings. The stored
+snapshot does not alias the caller's `MemoryState`, its backing mappings, or its record objects;
+later external mutation of any of those inputs cannot change `PacketStore.state`. The snapshot is
+revalidated for hashes, references, orphan packets, and exact runtime types before the constructor
+returns. The resulting stored state is required to support a canonical encode/decode round-trip;
+the state gate verifies that property after every accepted constructor and transition.
 `encode_state` is a fixed header followed by length-framed canonical-CBOR records in canonical key
 order. A decoder accepts exactly that canonical format, validates hashes and references, and
 rejects trailing data. Consequently, `state.serialized_bytes == len(encode_state(state))`.
