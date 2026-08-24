@@ -43,21 +43,24 @@ PacketStore.read(
 PacketStore.delete(handle: str) -> PacketStore
 ```
 
-Records own immutable byte copies, `MemoryState` owns immutable mapping copies, and packet IDs are
-SHA-256 hashes of the owned payload. `encode_state` is a fixed header followed by length-framed
-canonical-CBOR records in canonical key order. A decoder accepts exactly that canonical format,
-validates hashes and references, and rejects trailing data. Consequently,
-`state.serialized_bytes == len(encode_state(state))`.
+`BaseRecord` and `Packet` own immutable payload-byte copies, and `MemoryState` owns immutable
+mapping copies. The `Packet` and `MemoryState` constructors do not themselves verify content
+hashes. `packet_from_payload` creates a SHA-256 ID from the owned payload; `PacketStore`
+construction and transitions, plus `decode_state`, enforce that ID-to-payload relationship.
+`encode_state` is a fixed header followed by length-framed canonical-CBOR records in canonical key
+order. A decoder accepts exactly that canonical format, validates hashes and references, and
+rejects trailing data. Consequently, `state.serialized_bytes == len(encode_state(state))`.
 
 For a fixed admitted cohort, `bundle_cost_bytes` is the measured state-length increment for adding
 one new packet and its complete, unique incidence tuple. Packet-bundle costs are exact, positive,
 and additive under the fixed-cohort assumptions in the proof contract.
 
-Every store transition is functional and transactional: it returns a checked new `PacketStore`,
-does not mutate the prior store, and commits neither partial state nor over-budget state on error.
-Shared packets are deduplicated by content hash and are reclaimed only after their last incidence
-is removed. `read(..., update_usage=True)` increments usage in the returned store;
-`read(..., update_usage=False)` returns the same store and does not alter bytes or usage.
+Every mutating store transition is functional and transactional: it returns a checked new
+`PacketStore`, does not mutate the prior store, and commits neither partial state nor over-budget
+state on error. A functional no-op read may return the same already checked instance. Shared
+packets are deduplicated by content hash and are reclaimed only after their last incidence is
+removed. `read(..., update_usage=True)` increments usage in a returned new store;
+`read(..., update_usage=False)` may return the same store and does not alter bytes or usage.
 
 ## Progressive codec
 
