@@ -5,6 +5,41 @@ from ratemem.state.serialization import encode_state, packet_from_payload
 from ratemem.state.store import BudgetExceeded, PacketStore
 
 
+class _IntSubclass(int):
+    pass
+
+
+class _SpoofedIntType:
+    @property
+    def __class__(self) -> type[int]:
+        return int
+
+    def __lt__(self, other: object) -> bool:
+        return False
+
+    def __rlt__(self, other: object) -> bool:
+        return False
+
+
+@pytest.mark.parametrize(
+    "budget_bytes",
+    [
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+        pytest.param(4096.0, id="finite-float"),
+        pytest.param(True, id="true"),
+        pytest.param(False, id="false"),
+        pytest.param("4096", id="string"),
+        pytest.param(_IntSubclass(4096), id="int-subclass"),
+        pytest.param(_SpoofedIntType(), id="spoofed-int-type"),
+    ],
+)
+def test_budget_requires_exact_non_bool_int(budget_bytes: object) -> None:
+    with pytest.raises(TypeError, match="budget_bytes must be an integer"):
+        PacketStore.empty(budget_bytes)  # type: ignore[arg-type]
+
+
 def test_constructor_rejects_forged_packet_hash() -> None:
     forged = Packet("0" * 64, b"payload")
     state = MemoryState(packets={forged.packet_id: forged})

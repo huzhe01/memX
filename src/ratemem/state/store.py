@@ -38,6 +38,8 @@ class PacketStore:
     budget_bytes: int
 
     def __post_init__(self) -> None:
+        if type(self.budget_bytes) is not int:
+            raise TypeError("budget_bytes must be an integer")
         if self.budget_bytes < 0:
             raise ValueError("budget_bytes must be nonnegative")
         _validate_state(self.state)

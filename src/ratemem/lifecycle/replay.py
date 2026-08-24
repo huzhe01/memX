@@ -27,12 +27,13 @@ def replay(events: tuple[LifecycleEvent, ...], budget_bytes: int) -> ReplayResul
     errors: list[str] = []
     for index, event in enumerate(events):
         if isinstance(event, CreateEvent):
+            if event.handle in store.state.bases:
+                errors.append(f"{event.event_id}:duplicate-handle:{event.handle}")
+                continue
             try:
                 store = store.create(event.handle, event.base_payload, created_at=index)
             except BudgetExceeded:
                 errors.append(f"{event.event_id}:budget-exceeded:{event.handle}")
-            except ValueError:
-                errors.append(f"{event.event_id}:duplicate-handle:{event.handle}")
         elif isinstance(event, ReadEvent):
             try:
                 store, _ = store.read(event.handle, update_usage=True)
