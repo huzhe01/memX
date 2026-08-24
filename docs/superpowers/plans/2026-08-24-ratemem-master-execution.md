@@ -163,7 +163,7 @@ After all companion plans are complete, run from the worktree root:
 
 ```bash
 uv sync --all-extras --frozen
-uv run ruff check .
+uv run ruff check src tests
 uv run mypy src/ratemem
 uv run pytest -q
 uv run ratemem-eval gates evaluate \

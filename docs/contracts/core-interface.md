@@ -43,8 +43,19 @@ PacketStore.read(
 PacketStore.delete(handle: str) -> PacketStore
 ```
 
+Every identity field on `BaseRecord`, `Packet`, and `Incidence` accepts only an exact built-in,
+nonempty `str`; proxy objects and `str` subclasses are rejected. `BaseRecord.reads` and
+`BaseRecord.created_at` accept only exact built-in `int` values in the unsigned 64-bit range, and
+`Incidence.gain_q` accepts only an exact built-in `int` in the signed 16-bit range. Booleans,
+integer subclasses, and spoofed numeric types are rejected. `MemoryState` base and packet mapping
+keys are exact built-in nonempty strings. Each incidence mapping key is an exact built-in
+two-tuple of exact built-in nonempty strings. Mapping values must be exact `BaseRecord`, `Packet`,
+or `Incidence` instances in their corresponding maps; record subclasses are rejected. Store
+operations that take a handle apply the same exact nonempty-string rule before constructing or
+looking up state.
+
 `BaseRecord` and `Packet` own immutable payload-byte copies, and `MemoryState` owns immutable
-mapping copies. The `Packet` and `MemoryState` constructors do not themselves verify content
+mapping copies. The raw `Packet` and `MemoryState` constructors do not themselves verify content
 hashes. `packet_from_payload` creates a SHA-256 ID from the owned payload; `PacketStore`
 construction and transitions, plus `decode_state`, enforce that ID-to-payload relationship.
 `encode_state` is a fixed header followed by length-framed canonical-CBOR records in canonical key

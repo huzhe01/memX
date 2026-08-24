@@ -3189,7 +3189,7 @@ Expected: all tests pass; help lists all thirteen sub-apps and does not expose a
 
 - [ ] **Step 7: Run repository-wide checks**
 
-Run: `uv run ruff check . && uv run mypy src/ratemem && uv run pytest -q`
+Run: `uv run ruff check src tests && uv run mypy src/ratemem && uv run pytest -q`
 
 Expected: Ruff/mypy exit 0 and the complete repository test suite passes.
 

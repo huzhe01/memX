@@ -180,295 +180,66 @@ git commit -m "build: scaffold RateMem package"
 - Create: `src/ratemem/state/serialization.py`
 - Create: `tests/state/test_serialization.py`
 
-- [ ] **Step 1: Write canonical serialization and packet-hash tests**
+This task is now a freeze-and-verify step. The exact checked-in state model, serializer, and test
+file above are normative. Do not recreate them from an inline dataclass or CBOR skeleton: the
+hardened boundary rejects noncanonical types, keys, records, and encodings that the former compact
+examples accepted.
 
-```python
-# tests/state/test_serialization.py
-import pytest
+- [ ] **Step 1: Audit the exact checked-in serialization tests**
 
-from ratemem.state.model import BaseRecord, Incidence, MemoryState, Packet
-from ratemem.state.serialization import (
-    bundle_cost_bytes,
-    decode_state,
-    encode_state,
-    packet_from_payload,
-)
+Use `tests/state/test_serialization.py` itself as the executable inventory. It must retain
+coverage for exact byte accounting and bundle deltas; deterministic canonical round trips;
+immutable mapping and payload ownership; packet-hash and dangling-reference rejection; exact
+single-value canonical CBOR, section ordering, row arity/type, and fixed-width fields; duplicate
+and mismatched embedded identities; and exact record/key/value types.
 
+In particular, preserve adversarial cases for booleans, `int`/`str`/`tuple` subclasses,
+spoofed values, and record subclasses. A small illustrative excerpt is not a substitute for this
+checked-in suite.
 
-def test_packet_hash_state_bytes_and_bundle_delta_are_exact() -> None:
-    packet = packet_from_payload(b"enhancement")
-    assert packet.packet_id == packet_from_payload(b"enhancement").packet_id
-    base = BaseRecord("concept-a", b"base", reads=2, created_at=1)
-    incidence = Incidence("concept-a", packet.packet_id, gain_q=7)
-    empty_packets = MemoryState(bases={"concept-a": base})
-    state = MemoryState(
-        bases={"concept-a": base},
-        packets={packet.packet_id: packet},
-        incidences={("concept-a", packet.packet_id): incidence},
-    )
-    encoded = encode_state(state)
-    assert encode_state(decode_state(encoded)) == encoded
-    assert state.serialized_bytes == len(encoded)
-    assert len(encoded) - len(encode_state(empty_packets)) == bundle_cost_bytes(
-        packet, (incidence,)
-    )
+- [ ] **Step 2: Verify the exact checked-in state model**
 
+Review `src/ratemem/state/model.py` against `docs/contracts/core-interface.md`. Preserve all of
+these boundaries:
 
-def test_state_owns_immutable_mapping_copies() -> None:
-    source = {"concept-a": BaseRecord("concept-a", b"base", reads=0, created_at=1)}
-    state = MemoryState(bases=source)
-    source.clear()
-    assert tuple(state.bases) == ("concept-a",)
-    with pytest.raises(TypeError):
-        state.bases["concept-b"] = BaseRecord(  # type: ignore[index]
-            "concept-b", b"base", 0, 2
-        )
+- `BaseRecord.handle`, `Packet.packet_id`, and both `Incidence` identities are exact built-in
+  nonempty strings.
+- `BaseRecord.reads` and `BaseRecord.created_at` are exact built-in uint64 integers;
+  `Incidence.gain_q` is an exact built-in int16 integer. Booleans, subclasses, and spoofed numeric
+  objects are rejected.
+- Base and packet keys are exact built-in nonempty strings. Incidence keys are exact built-in
+  two-tuples whose two members are exact built-in nonempty strings.
+- Mapping values are exact `BaseRecord`, `Packet`, or `Incidence` instances as appropriate;
+  mapping keys equal their embedded identities, and duplicate embedded identities are rejected.
+- Records own immutable payload-byte copies and `MemoryState` owns immutable mapping copies.
 
+Raw `Packet` construction intentionally validates identity and ownership but not the content hash.
 
-def test_packet_payload_and_references_are_checked_on_decode() -> None:
-    packet = Packet(packet_id="0" * 64, payload=b"wrong")
-    state = MemoryState(bases={}, packets={packet.packet_id: packet}, incidences={})
-    with pytest.raises(ValueError, match="packet hash mismatch"):
-        decode_state(encode_state(state))
+- [ ] **Step 3: Verify canonical serialization and validation**
 
-    valid = packet_from_payload(b"valid")
-    dangling = MemoryState(
-        packets={valid.packet_id: valid},
-        incidences={
-            ("missing", valid.packet_id): Incidence(
-                "missing", valid.packet_id, gain_q=1
-            )
-        },
-    )
-    with pytest.raises(ValueError, match="dangling packet incidence"):
-        decode_state(encode_state(dangling))
-```
+Review the exact checked-in `src/ratemem/state/serialization.py` together with the model and tests.
+`packet_from_payload` must hash the same owned bytes stored by the returned packet.
+`encode_state` is the fixed header plus length-framed canonical-CBOR records in canonical section
+order. `decode_state` accepts exactly one canonical value per frame, exact row schemas and fixed
+integer widths, canonical ordering, no duplicates or trailing bytes, valid packet hashes, and no
+dangling references; re-encoding the decoded state must reproduce the input exactly.
+`bundle_cost_bytes` remains the measured positive additive packet-plus-incidence delta under the
+fixed-cohort proof assumptions.
 
-- [ ] **Step 2: Run the focused tests and verify missing modules fail**
+- [ ] **Step 4: Run the state serialization gate and commit**
 
-Run: `uv run pytest tests/state/test_serialization.py -q`
-
-Expected: collection fails because `ratemem.state.model` does not exist.
-
-- [ ] **Step 3: Implement the immutable state types**
-
-```python
-# src/ratemem/state/model.py
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-from types import MappingProxyType
-from typing import Mapping, TypeVar
-
-_K = TypeVar("_K")
-_V = TypeVar("_V")
-
-
-def _frozen_copy(values: Mapping[_K, _V]) -> Mapping[_K, _V]:
-    return MappingProxyType(dict(values))
-
-
-@dataclass(frozen=True, slots=True)
-class BaseRecord:
-    handle: str
-    payload: bytes
-    reads: int
-    created_at: int
-
-    def __post_init__(self) -> None:
-        if not self.handle:
-            raise ValueError("handle must be nonempty")
-        if not 0 <= self.reads <= 0xFFFFFFFFFFFFFFFF:
-            raise ValueError("reads must fit uint64")
-        if not 0 <= self.created_at <= 0xFFFFFFFFFFFFFFFF:
-            raise ValueError("created_at must fit uint64")
-
-
-@dataclass(frozen=True, slots=True)
-class Packet:
-    packet_id: str
-    payload: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class Incidence:
-    handle: str
-    packet_id: str
-    gain_q: int
-
-    def __post_init__(self) -> None:
-        if not -0x8000 <= self.gain_q <= 0x7FFF:
-            raise ValueError("gain_q must fit int16")
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryState:
-    bases: Mapping[str, BaseRecord] = field(default_factory=dict)
-    packets: Mapping[str, Packet] = field(default_factory=dict)
-    incidences: Mapping[tuple[str, str], Incidence] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "bases", _frozen_copy(self.bases))
-        object.__setattr__(self, "packets", _frozen_copy(self.packets))
-        object.__setattr__(self, "incidences", _frozen_copy(self.incidences))
-
-    @property
-    def serialized_bytes(self) -> int:
-        from ratemem.state.serialization import encode_state
-
-        return len(encode_state(self))
-```
-
-- [ ] **Step 4: Implement canonical CBOR serialization and validation**
-
-```python
-# src/ratemem/state/serialization.py
-from __future__ import annotations
-
-import hashlib
-import struct
-from typing import Any, cast
-
-import cbor2
-
-from ratemem.state.model import BaseRecord, Incidence, MemoryState, Packet
-
-_MAGIC = b"RTMEM001"
-_VERSION = 1
-_HEADER = struct.Struct("<8sIQQQ")
-_LENGTH = struct.Struct("<I")
-_UINT64 = struct.Struct("<Q")
-_INT16 = struct.Struct("<h")
-
-
-def _frame(row: list[Any]) -> bytes:
-    payload = cbor2.dumps(row, canonical=True)
-    if len(payload) > 0xFFFFFFFF:
-        raise ValueError("record exceeds the uint32 frame limit")
-    return _LENGTH.pack(len(payload)) + payload
-
-
-def _base_frame(record: BaseRecord) -> bytes:
-    return _frame(
-        [
-            record.handle,
-            record.payload,
-            _UINT64.pack(record.reads),
-            _UINT64.pack(record.created_at),
-        ]
-    )
-
-
-def _packet_frame(packet: Packet) -> bytes:
-    return _frame([packet.packet_id, packet.payload])
-
-
-def _incidence_frame(incidence: Incidence) -> bytes:
-    return _frame(
-        [incidence.handle, incidence.packet_id, _INT16.pack(incidence.gain_q)]
-    )
-
-
-def packet_from_payload(payload: bytes) -> Packet:
-    packet_id = hashlib.sha256(payload).hexdigest()
-    return Packet(packet_id=packet_id, payload=payload)
-
-
-def bundle_cost_bytes(packet: Packet, incidences: tuple[Incidence, ...]) -> int:
-    if not incidences:
-        raise ValueError("packet bundle must contain at least one incidence")
-    if any(edge.packet_id != packet.packet_id for edge in incidences):
-        raise ValueError("bundle incidence points at another packet")
-    if len({edge.handle for edge in incidences}) != len(incidences):
-        raise ValueError("packet bundle repeats a concept incidence")
-    return len(_packet_frame(packet)) + sum(
-        len(_incidence_frame(edge)) for edge in incidences
-    )
-
-
-def encode_state(state: MemoryState) -> bytes:
-    bases = sorted(state.bases.values(), key=lambda item: item.handle)
-    packets = sorted(state.packets.values(), key=lambda item: item.packet_id)
-    incidences = sorted(
-        state.incidences.values(), key=lambda item: (item.handle, item.packet_id)
-    )
-    output = bytearray(
-        _HEADER.pack(_MAGIC, _VERSION, len(bases), len(packets), len(incidences))
-    )
-    for record in bases:
-        output.extend(_base_frame(record))
-    for packet in packets:
-        output.extend(_packet_frame(packet))
-    for incidence in incidences:
-        output.extend(_incidence_frame(incidence))
-    return bytes(output)
-
-
-def decode_state(payload: bytes) -> MemoryState:
-    if len(payload) < _HEADER.size:
-        raise ValueError("truncated memory-state header")
-    magic, version, base_count, packet_count, incidence_count = _HEADER.unpack_from(
-        payload
-    )
-    if magic != _MAGIC or version != _VERSION:
-        raise ValueError("unsupported memory-state version")
-    offset = _HEADER.size
-
-    def take_row() -> list[Any]:
-        nonlocal offset
-        if offset + _LENGTH.size > len(payload):
-            raise ValueError("truncated record length")
-        (size,) = _LENGTH.unpack_from(payload, offset)
-        offset += _LENGTH.size
-        end = offset + size
-        if end > len(payload):
-            raise ValueError("truncated record payload")
-        row = cast(list[Any], cbor2.loads(payload[offset:end]))
-        offset = end
-        return row
-
-    base_rows = [take_row() for _ in range(base_count)]
-    packet_rows = [take_row() for _ in range(packet_count)]
-    incidence_rows = [take_row() for _ in range(incidence_count)]
-    if offset != len(payload):
-        raise ValueError("trailing bytes after memory state")
-    bases = {
-        row[0]: BaseRecord(
-            row[0],
-            row[1],
-            _UINT64.unpack(row[2])[0],
-            _UINT64.unpack(row[3])[0],
-        )
-        for row in base_rows
-    }
-    packets = {row[0]: Packet(row[0], row[1]) for row in packet_rows}
-    incidences = {
-        (row[0], row[1]): Incidence(row[0], row[1], _INT16.unpack(row[2])[0])
-        for row in incidence_rows
-    }
-    if (
-        len(bases) != base_count
-        or len(packets) != packet_count
-        or len(incidences) != incidence_count
-    ):
-        raise ValueError("duplicate serialized state key")
-    for packet in packets.values():
-        if hashlib.sha256(packet.payload).hexdigest() != packet.packet_id:
-            raise ValueError("packet hash mismatch")
-    for edge in incidences.values():
-        if edge.handle not in bases or edge.packet_id not in packets:
-            raise ValueError("dangling packet incidence")
-    return MemoryState(bases=bases, packets=packets, incidences=incidences)
-```
-
-- [ ] **Step 5: Run state tests and commit**
-
-Run: `uv run pytest tests/state/test_serialization.py -q`
-
-Expected: `3 passed`.
+Run:
 
 ```bash
-git add src/ratemem/state tests/state
+uv run pytest tests/state/test_serialization.py -q
+uv run ruff check src/ratemem/state tests/state/test_serialization.py
+uv run mypy src/ratemem/state
+```
+
+Expected: every checked-in serialization/model test passes and both static checks exit 0.
+
+```bash
+git add src/ratemem/state tests/state/test_serialization.py
 git commit -m "feat: add canonical memory state"
 ```
 
@@ -478,213 +249,51 @@ git commit -m "feat: add canonical memory state"
 - Create: `src/ratemem/state/store.py`
 - Create: `tests/state/test_store.py`
 
-- [ ] **Step 1: Write create, deduplication, redirection, deletion, and budget tests**
+This task is now a freeze-and-verify step. The exact checked-in store and store tests are normative.
+Do not replace them with an inline transactional-store skeleton: the hardened code validates
+constructor state, exact input types, hashes, references, duplicate attachments, overflow, and
+canonical round trips.
 
-```python
-# tests/state/test_store.py
-import pytest
+- [ ] **Step 1: Audit the exact checked-in store tests**
 
-from ratemem.state.model import Incidence, Packet
-from ratemem.state.serialization import packet_from_payload
-from ratemem.state.store import BudgetExceeded, PacketStore
+Use `tests/state/test_store.py` itself as the executable inventory. It must retain coverage for
+exact non-boolean budgets; exact handle and creation-counter inputs; forged packet hashes, dangling
+incidences, orphan packets, and record subclasses; atomic duplicate replacement and identity
+mismatch failures; exact-budget acceptance and one-byte-under rejection; functional create/read/
+replace/delete operations; uint64 read overflow; idempotent duplicate attachment; shared-packet
+reclamation; and canonical round trips after every accepted transition.
 
+- [ ] **Step 2: Verify constructor and transition validation**
 
-def test_delete_reclaims_only_unreferenced_packets() -> None:
-    store = PacketStore.empty(budget_bytes=4096)
-    packet = packet_from_payload(b"shared")
-    store = store.create("a", b"base-a", created_at=1)
-    store = store.create("b", b"base-b", created_at=2)
-    store = store.attach_bundle(
-        packet,
-        (
-            Incidence("a", packet.packet_id, 4),
-            Incidence("b", packet.packet_id, 5),
-        ),
-    )
+Review `src/ratemem/state/store.py` against `docs/contracts/core-interface.md`. Construction
+accepts only an exact `MemoryState`, an exact built-in integer byte budget, a fully
+content-addressed packet set, no dangling incidence, and no orphan packet. Operations accepting a
+handle apply the exact built-in nonempty-string rule before lookup. Packet and incidence inputs are
+exact record instances, attachments agree with the operation identities, and replacement rejects
+duplicate packet attachments before producing state.
 
-    after_a = store.delete("a")
-    assert packet.packet_id in after_a.state.packets
-    after_b = after_a.delete("b")
-    assert packet.packet_id not in after_b.state.packets
-    assert after_b.state.incidences == {}
+- [ ] **Step 3: Verify functional atomicity and exact accounting**
 
+Every accepted transition returns a newly checked store except the declared functional no-op read.
+Every rejected transition leaves the old store unchanged. Create, attach/bundle, replace,
+usage-updating read, and delete all flow through the same constructor validation and exact
+`serialized_bytes` budget check. Shared packets remain until their last incidence is removed;
+orphan packets never persist.
 
-def test_failed_transaction_does_not_mutate_old_state() -> None:
-    store = PacketStore.empty(budget_bytes=512).create("a", b"small", created_at=1)
-    packet = packet_from_payload(b"x" * 512)
-    with pytest.raises(BudgetExceeded):
-        store.attach(packet, Incidence("a", packet.packet_id, 1))
-    assert packet.packet_id not in store.state.packets
+- [ ] **Step 4: Run the complete state gate and commit**
 
-
-def test_replace_redirects_one_concept_atomically_and_preserves_shared_packet() -> None:
-    shared = packet_from_payload(b"shared")
-    private = packet_from_payload(b"private-a")
-    store = PacketStore.empty(budget_bytes=4096)
-    store = store.create("a", b"old-a", created_at=1).create("b", b"base-b", created_at=2)
-    store = store.attach(shared, Incidence("a", shared.packet_id, 2))
-    store = store.attach(shared, Incidence("b", shared.packet_id, 3))
-
-    updated = store.replace(
-        "a", b"new-a", ((private, Incidence("a", private.packet_id, 4)),)
-    )
-    assert updated.state.bases["a"].payload == b"new-a"
-    assert ("a", shared.packet_id) not in updated.state.incidences
-    assert ("b", shared.packet_id) in updated.state.incidences
-    assert shared.packet_id in updated.state.packets
-    assert private.packet_id in updated.state.packets
-    assert store.state.bases["a"].payload == b"old-a"
-
-
-def test_attach_rejects_forged_content_address() -> None:
-    store = PacketStore.empty(budget_bytes=2048).create("a", b"base", created_at=1)
-    forged = Packet("0" * 64, b"payload")
-    with pytest.raises(ValueError, match="packet hash mismatch"):
-        store.attach(forged, Incidence("a", forged.packet_id, 1))
-```
-
-- [ ] **Step 2: Run the tests and confirm `PacketStore` is missing**
-
-Run: `uv run pytest tests/state/test_store.py -q`
-
-Expected: collection fails importing `ratemem.state.store`.
-
-- [ ] **Step 3: Implement functional store transitions and reference-count GC**
-
-```python
-# src/ratemem/state/store.py
-from __future__ import annotations
-
-import hashlib
-from dataclasses import dataclass
-
-from ratemem.state.model import BaseRecord, Incidence, MemoryState, Packet
-
-
-class BudgetExceeded(ValueError):
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class PacketStore:
-    state: MemoryState
-    budget_bytes: int
-
-    def __post_init__(self) -> None:
-        if self.budget_bytes < 0:
-            raise ValueError("budget_bytes must be nonnegative")
-        if self.state.serialized_bytes > self.budget_bytes:
-            raise BudgetExceeded(
-                f"state uses {self.state.serialized_bytes} bytes, "
-                f"budget is {self.budget_bytes}"
-            )
-
-    @classmethod
-    def empty(cls, budget_bytes: int) -> "PacketStore":
-        return cls(state=MemoryState(), budget_bytes=budget_bytes)
-
-    def _checked(self, state: MemoryState) -> "PacketStore":
-        return PacketStore(state=state, budget_bytes=self.budget_bytes)
-
-    @staticmethod
-    def _validate_attachment(packet: Packet, incidence: Incidence, handle: str) -> None:
-        if hashlib.sha256(packet.payload).hexdigest() != packet.packet_id:
-            raise ValueError("packet hash mismatch")
-        if incidence.handle != handle:
-            raise ValueError("incidence handle does not match operation")
-        if incidence.packet_id != packet.packet_id:
-            raise ValueError("incidence packet id does not match payload")
-
-    @staticmethod
-    def _collect_referenced(
-        packets: dict[str, Packet], incidences: dict[tuple[str, str], Incidence]
-    ) -> dict[str, Packet]:
-        referenced = {edge.packet_id for edge in incidences.values()}
-        return {key: value for key, value in packets.items() if key in referenced}
-
-    def create(self, handle: str, payload: bytes, created_at: int) -> "PacketStore":
-        if handle in self.state.bases:
-            raise ValueError(f"handle already exists: {handle}")
-        bases = dict(self.state.bases)
-        bases[handle] = BaseRecord(handle, payload, reads=0, created_at=created_at)
-        return self._checked(MemoryState(bases, self.state.packets, self.state.incidences))
-
-    def attach(self, packet: Packet, incidence: Incidence) -> "PacketStore":
-        return self.attach_bundle(packet, (incidence,))
-
-    def attach_bundle(
-        self, packet: Packet, bundle: tuple[Incidence, ...]
-    ) -> "PacketStore":
-        if not bundle:
-            raise ValueError("packet bundle must contain at least one incidence")
-        handles = [incidence.handle for incidence in bundle]
-        if len(set(handles)) != len(handles):
-            raise ValueError("packet bundle repeats a concept incidence")
-        for incidence in bundle:
-            if incidence.handle not in self.state.bases:
-                raise KeyError(incidence.handle)
-            self._validate_attachment(packet, incidence, incidence.handle)
-        packets = dict(self.state.packets)
-        packets[packet.packet_id] = packet
-        incidences = dict(self.state.incidences)
-        for incidence in bundle:
-            incidences[(incidence.handle, incidence.packet_id)] = incidence
-        return self._checked(MemoryState(self.state.bases, packets, incidences))
-
-    def replace(
-        self,
-        handle: str,
-        payload: bytes,
-        attachments: tuple[tuple[Packet, Incidence], ...],
-    ) -> "PacketStore":
-        if handle not in self.state.bases:
-            raise KeyError(handle)
-        for packet, incidence in attachments:
-            self._validate_attachment(packet, incidence, handle)
-        old = self.state.bases[handle]
-        bases = dict(self.state.bases)
-        bases[handle] = BaseRecord(handle, payload, old.reads, old.created_at)
-        packets = dict(self.state.packets)
-        incidences = {
-            key: value
-            for key, value in self.state.incidences.items()
-            if value.handle != handle
-        }
-        for packet, incidence in attachments:
-            packets[packet.packet_id] = packet
-            incidences[(handle, packet.packet_id)] = incidence
-        packets = self._collect_referenced(packets, incidences)
-        return self._checked(MemoryState(bases, packets, incidences))
-
-    def read(self, handle: str, update_usage: bool = True) -> tuple["PacketStore", BaseRecord]:
-        record = self.state.bases[handle]
-        if not update_usage:
-            return self, record
-        bases = dict(self.state.bases)
-        bases[handle] = BaseRecord(handle, record.payload, record.reads + 1, record.created_at)
-        return self._checked(MemoryState(bases, self.state.packets, self.state.incidences)), record
-
-    def delete(self, handle: str) -> "PacketStore":
-        if handle not in self.state.bases:
-            raise KeyError(handle)
-        bases = {key: value for key, value in self.state.bases.items() if key != handle}
-        incidences = {
-            key: value for key, value in self.state.incidences.items() if value.handle != handle
-        }
-        packets = self._collect_referenced(dict(self.state.packets), incidences)
-        return self._checked(MemoryState(bases, packets, incidences))
-```
-
-- [ ] **Step 4: Run store and serialization tests**
-
-Run: `uv run pytest tests/state -q`
-
-Expected: `7 passed`.
-
-- [ ] **Step 5: Commit the packet store**
+Run:
 
 ```bash
-git add src/ratemem/state/store.py tests/state/test_store.py
+uv run pytest tests/state -q
+uv run ruff check src/ratemem/state tests/state
+uv run mypy src/ratemem/state
+```
+
+Expected: every checked-in state test passes and both static checks exit 0.
+
+```bash
+git add src/ratemem/state tests/state
 git commit -m "feat: add transactional packet store"
 ```
 
@@ -695,171 +304,59 @@ git commit -m "feat: add transactional packet store"
 - Create: `src/ratemem/codec/progressive.py`
 - Create: `tests/codec/test_progressive.py`
 
-- [ ] **Step 1: Write reconstruction and prefix-consistency tests**
+This task is now a freeze-and-verify step. The exact checked-in versions of
+`src/ratemem/codec/progressive.py` and `tests/codec/test_progressive.py` at the Gate 1
+freeze are normative. Do not recreate either file from an abbreviated inline implementation or
+starter test: earlier sketches omitted validation that is part of the frozen interface.
 
-```python
-# tests/codec/test_progressive.py
-import numpy as np
+- [ ] **Step 1: Audit the exact checked-in codec tests**
 
-from ratemem.codec.progressive import ProgressiveCodec
+Use `tests/codec/test_progressive.py` itself as the executable test inventory. It must retain
+coverage for deterministic payloads and the planned float32 quantizer; monotone prefix
+reconstruction; float16 boundaries; immutable ownership; canonical little-endian float16 NPY
+headers, shape, C order, and exact data length; exact global packet cardinality; selected-prefix
+hash, group, offset, body-size, and finite-value validation; rejection of repeated selected packets;
+and isolation of malformed payload/hash/metadata in an existing unselected suffix.
 
-
-def test_packets_monotonically_reduce_code_error() -> None:
-    code = np.array([0.1, -1.7, 0.3, 2.2, -0.8, 0.4, 1.1, -0.2], dtype=np.float32)
-    encoded = ProgressiveCodec(group_size=2).encode("a", code)
-    errors = []
-    for count in range(len(encoded.packets) + 1):
-        decoded = encoded.decode(packet_count=count)
-        errors.append(float(np.mean((decoded - code) ** 2)))
-    assert errors == sorted(errors, reverse=True)
-    assert errors[-1] < errors[0]
-
-
-def test_packet_payloads_are_deterministic() -> None:
-    code = np.linspace(-1.0, 1.0, 12, dtype=np.float32)
-    codec = ProgressiveCodec(group_size=3)
-    first = codec.encode("a", code)
-    second = codec.encode("a", code)
-    assert first.base_payload == second.base_payload
-    assert [item.packet.packet_id for item in first.packets] == [
-        item.packet.packet_id for item in second.packets
-    ]
-```
-
-- [ ] **Step 2: Verify tests fail because the codec is absent**
-
-Run: `uv run pytest tests/codec/test_progressive.py -q`
-
-Expected: collection fails importing `ratemem.codec.progressive`.
-
-- [ ] **Step 3: Implement the base quantizer and immutable residual packets**
-
-```python
-# src/ratemem/codec/progressive.py
-from __future__ import annotations
-
-import io
-import struct
-from dataclasses import dataclass
-from typing import TypeAlias, cast
-
-import numpy as np
-from numpy.typing import NDArray
-
-from ratemem.state.model import Packet
-from ratemem.state.serialization import packet_from_payload
-
-_PACKET_HEADER = struct.Struct("<II")
-FloatArray: TypeAlias = NDArray[np.float32]
-
-
-def _encode_residual(group: int, start: int, values: FloatArray) -> bytes:
-    body = np.asarray(values, dtype="<f2").tobytes(order="C")
-    return _PACKET_HEADER.pack(group, start) + body
-
-
-def _decode_residual(payload: bytes) -> tuple[int, int, FloatArray]:
-    if len(payload) < _PACKET_HEADER.size:
-        raise ValueError("truncated residual packet")
-    group, start = _PACKET_HEADER.unpack(payload[: _PACKET_HEADER.size])
-    values = np.frombuffer(payload[_PACKET_HEADER.size :], dtype="<f2").astype(
-        np.float32
-    )
-    return group, start, cast(FloatArray, values)
-
-
-@dataclass(frozen=True, slots=True)
-class EncodedPacket:
-    group: int
-    packet: Packet
-
-
-@dataclass(frozen=True, slots=True)
-class EncodedCode:
-    handle: str
-    shape: tuple[int, ...]
-    base_payload: bytes
-    packets: tuple[EncodedPacket, ...]
-
-    def decode(self, packet_count: int) -> FloatArray:
-        if not 0 <= packet_count <= len(self.packets):
-            raise ValueError("packet_count is outside the progressive stream")
-        with io.BytesIO(self.base_payload) as stream:
-            base = cast(
-                FloatArray, np.load(stream, allow_pickle=False).astype(np.float32)
-            )
-        output = base.reshape(-1).copy()
-        for encoded in self.packets[:packet_count]:
-            group, start, values = _decode_residual(encoded.packet.payload)
-            if group != encoded.group:
-                raise ValueError("packet group mismatch")
-            output[start : start + len(values)] += values
-        return cast(FloatArray, output.reshape(self.shape))
-
-
-class ProgressiveCodec:
-    def __init__(self, group_size: int) -> None:
-        if group_size < 1:
-            raise ValueError("group_size must be positive")
-        self.group_size = group_size
-
-    def encode(self, handle: str, code: FloatArray) -> EncodedCode:
-        flat = cast(FloatArray, np.asarray(code, dtype=np.float32).reshape(-1))
-        if flat.size == 0 or not np.all(np.isfinite(flat)):
-            raise ValueError("code must be finite and nonempty")
-        scale = max(
-            float(np.max(np.abs(flat))) / 127.0, np.finfo(np.float32).eps
-        )
-        base = (
-            np.round(flat / scale).clip(-127, 127).astype(np.int8).astype(np.float32)
-            * scale
-        )
-        base_stream = io.BytesIO()
-        np.save(base_stream, base.reshape(code.shape).astype(np.float16), allow_pickle=False)
-        decoded_base = base.astype(np.float16).astype(np.float32)
-        residual = flat - decoded_base
-        packets: list[EncodedPacket] = []
-        for group, start in enumerate(range(0, len(flat), self.group_size)):
-            payload = _encode_residual(group, start, residual[start : start + self.group_size])
-            packets.append(EncodedPacket(group, packet_from_payload(payload)))
-        return EncodedCode(handle, tuple(code.shape), base_stream.getvalue(), tuple(packets))
-```
-
-Before this step is considered green, extend the starter to the frozen Gate 1 codec contract:
-`EncodedCode` owns `group_size`; every decode validates the exact canonical little-endian float16
-NPY base and the global packet cardinality implied by `shape` and `group_size`; missing or extra
-suffix packets invalidate even `decode(0)`. After those global checks, validate hashes, group order,
-offsets, body sizes, and finite values only through the requested prefix, so malformed payload/hash/
-metadata in an existing unselected suffix does not invalidate a shorter prefix. The canonical tests
-also cover float16 range boundaries, defensive byte ownership, and exact reserialization of the NPY
-base.
-
-- [ ] **Step 4: Add malformed-packet rejection coverage**
-
-Append this test to `tests/codec/test_progressive.py`:
-
-```python
-def test_truncated_packet_is_rejected() -> None:
-    import pytest
-
-    from ratemem.codec.progressive import _decode_residual
-
-    with pytest.raises(ValueError, match="truncated residual packet"):
-        _decode_residual(b"bad")
-```
-
-Expected: the new test passes and `rg 'allow_pickle=True' src/ratemem` returns no matches.
-
-- [ ] **Step 5: Run codec tests and commit**
+- [ ] **Step 2: Verify the frozen codec contract**
 
 Run:
 
 ```bash
 uv run pytest tests/codec/test_progressive.py -q
-rg 'allow_pickle=True' src/ratemem && exit 1 || true
 ```
 
-Expected: `3 passed`; no unsafe pickle match.
+Expected: every checked-in codec test passes. A fixed historical pass count is deliberately not
+recorded because the checked-in hardened test file, rather than a stale excerpt, defines the gate.
+
+- [ ] **Step 3: Review the exact checked-in implementation**
+
+Review `src/ratemem/codec/progressive.py` against
+`docs/contracts/core-interface.md`. In particular, preserve `EncodedCode.group_size`, exact
+packet-count validation before prefix selection, canonical NPY reserialization, content-hash
+validation for selected packets, exact tuple/header order and offsets, and defensive ownership of
+base and packet metadata. Validation of an existing unselected suffix must remain limited to the
+global tuple cardinality; its payload, hash, and metadata are not inspected by a shorter decode.
+
+- [ ] **Step 4: Run the codec gate and commit**
+
+Run:
+
+```bash
+uv run pytest tests/codec/test_progressive.py -q
+uv run ruff check src/ratemem/codec tests/codec
+uv run mypy src/ratemem/codec
+if rg -q 'allow_pickle=True' src/ratemem; then
+  exit 1
+else
+  ratemem_pickle_scan_status=$?
+  if [ "$ratemem_pickle_scan_status" -ne 1 ]; then
+    exit "$ratemem_pickle_scan_status"
+  fi
+fi
+```
+
+Expected: the checked-in tests pass, Ruff and mypy exit 0, and there is no unsafe-pickle match.
 
 ```bash
 git add src/ratemem/codec tests/codec
@@ -1779,232 +1276,52 @@ git commit -m "feat: add certified snapshot allocator"
 - Create: `src/ratemem/lifecycle/replay.py`
 - Create: `tests/lifecycle/test_replay.py`
 
-- [ ] **Step 1: Write the probe-isolation and deterministic-replay tests**
+This task is now a freeze-and-verify step. The exact checked-in lifecycle files above are
+normative. Do not replace them with an inline event or replay skeleton: the hardened code owns
+bytes, validates exact identities, rejects event subclasses through exact-type dispatch, and
+preserves precise error classification.
 
-```python
-# tests/lifecycle/test_replay.py
-import pytest
-from hypothesis import given, strategies as st
+- [ ] **Step 1: Audit the exact checked-in replay tests**
 
-from ratemem.lifecycle.events import (
-    CreateEvent,
-    DeleteEvent,
-    ProbeEvent,
-    ReadEvent,
-    UpdateEvent,
-)
-from ratemem.lifecycle.replay import replay
-from ratemem.state.model import MemoryState
-from ratemem.state.store import BudgetExceeded
+Use `tests/lifecycle/test_replay.py` itself as the executable Gate 1 inventory. It currently
+covers exact nonempty event identities, owned bytes-like payloads, rejection of payload and
+non-payload event subclasses, read-only probes, deterministic replay, stale handles, preserved
+usage on update, exact duplicate-create classification, propagation of unrelated `ValueError`,
+early rejection of a non-integral budget, randomized hard-budget traces, and both sides of the
+replay-initialization boundary. In particular,
+`test_replay_rejects_budget_below_empty_state_before_processing_events` verifies that a budget
+below `MemoryState().serialized_bytes` raises `BudgetExceeded` before event processing, while
+`test_replay_records_create_failure_at_exact_empty_state_budget` verifies that a create failure
+after successful empty-store initialization is recorded as the deterministic event-level
+`budget-exceeded` error and leaves the empty state intact.
 
+- [ ] **Step 2: Verify the exact checked-in event model**
 
-def test_empty_state_budget_failure_precedes_event_replay() -> None:
-    minimum = MemoryState().serialized_bytes
-    events = (CreateEvent(event_id="1", handle="a", base_payload=b"base"),)
-    with pytest.raises(BudgetExceeded):
-        replay(events, budget_bytes=minimum - 1)
+Review `src/ratemem/lifecycle/events.py` against `docs/contracts/core-interface.md`. Preserve
+the closed five-event union, frozen slots, exact built-in nonempty `str` validation for
+`event_id` and `handle`, rejection of string subclasses and spoofed types, and owned immutable
+copies of `bytes`, `bytearray`, and `memoryview` create/update payloads.
 
+- [ ] **Step 3: Verify exact-type deterministic replay**
 
-def test_event_budget_failure_is_recorded_after_store_initialization() -> None:
-    minimum = MemoryState().serialized_bytes
-    events = (CreateEvent(event_id="1", handle="a", base_payload=b"base"),)
-    result = replay(events, budget_bytes=minimum)
-    assert result.state == MemoryState()
-    assert result.errors == ("1:budget-exceeded:a",)
+Review `src/ratemem/lifecycle/replay.py` and `tests/lifecycle/test_replay.py` together. Replay
+must initialize `PacketStore.empty` before event handling, dispatch only on the exact five event
+classes, distinguish duplicate create from unrelated validation failures, preserve prior usage on
+update, leave probes read-only, and record only the declared event-level errors. It must never use
+broad `isinstance` dispatch or catch every `ValueError` as a duplicate.
 
+- [ ] **Step 4: Run lifecycle tests and commit**
 
-def test_probe_does_not_refresh_usage_or_change_bytes() -> None:
-    events = (
-        CreateEvent(event_id="1", handle="a", base_payload=b"base"),
-        ReadEvent(event_id="2", handle="a"),
-        ProbeEvent(event_id="3", handle="a"),
-    )
-    result = replay(events, budget_bytes=2048)
-    assert result.state.bases["a"].reads == 1
-    assert result.probe_sizes == (result.state.serialized_bytes,)
+Run:
 
-
-def test_replay_is_deterministic_and_probe_rejects_stale_handle() -> None:
-    events = (
-        CreateEvent(event_id="1", handle="a", base_payload=b"base"),
-        DeleteEvent(event_id="2", handle="a"),
-        ProbeEvent(event_id="3", handle="a"),
-    )
-    first = replay(events, budget_bytes=2048)
-    second = replay(events, budget_bytes=2048)
-    assert first == second
-    assert first.errors == ("3:stale-handle:a",)
-
-
-def test_update_preserves_usage_and_stale_delete_is_recorded() -> None:
-    events = (
-        CreateEvent(event_id="1", handle="a", base_payload=b"old"),
-        ReadEvent(event_id="2", handle="a"),
-        UpdateEvent(event_id="3", handle="a", base_payload=b"new"),
-        DeleteEvent(event_id="4", handle="missing"),
-    )
-    result = replay(events, budget_bytes=2048)
-    assert result.state.bases["a"].payload == b"new"
-    assert result.state.bases["a"].reads == 1
-    assert result.errors == ("4:stale-handle:missing",)
-
-
-@given(
-    operations=st.lists(
-        st.tuples(
-            st.sampled_from(("create", "update", "read", "delete", "probe")),
-            st.integers(min_value=0, max_value=4),
-            st.binary(min_size=0, max_size=256),
-        ),
-        min_size=1,
-        max_size=40,
-    )
-)
-def test_randomized_replay_never_exceeds_budget(
-    operations: list[tuple[str, int, bytes]],
-) -> None:
-    events = []
-    for index, (kind, slot, payload) in enumerate(operations):
-        event_id = str(index)
-        handle = f"h{slot}"
-        if kind == "create":
-            events.append(CreateEvent(event_id, handle, payload))
-        elif kind == "update":
-            events.append(UpdateEvent(event_id, handle, payload))
-        elif kind == "read":
-            events.append(ReadEvent(event_id, handle))
-        elif kind == "delete":
-            events.append(DeleteEvent(event_id, handle))
-        else:
-            events.append(ProbeEvent(event_id, handle))
-    result = replay(tuple(events), budget_bytes=512)
-    assert result.state.serialized_bytes <= 512
-    assert replay(tuple(events), budget_bytes=512) == result
+```bash
+uv run pytest tests/lifecycle/test_replay.py -q
+uv run ruff check src/ratemem/lifecycle tests/lifecycle
+uv run mypy src/ratemem/lifecycle
 ```
 
-- [ ] **Step 2: Run the tests and verify lifecycle modules are missing**
-
-Run: `uv run pytest tests/lifecycle/test_replay.py -q`
-
-Expected: collection fails importing `ratemem.lifecycle.events`.
-
-- [ ] **Step 3: Implement the closed event union**
-
-```python
-# src/ratemem/lifecycle/events.py
-from dataclasses import dataclass
-from typing import TypeAlias
-
-
-@dataclass(frozen=True, slots=True)
-class CreateEvent:
-    event_id: str
-    handle: str
-    base_payload: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class ReadEvent:
-    event_id: str
-    handle: str
-
-
-@dataclass(frozen=True, slots=True)
-class UpdateEvent:
-    event_id: str
-    handle: str
-    base_payload: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class ProbeEvent:
-    event_id: str
-    handle: str
-
-
-@dataclass(frozen=True, slots=True)
-class DeleteEvent:
-    event_id: str
-    handle: str
-
-
-LifecycleEvent: TypeAlias = (
-    CreateEvent | ReadEvent | UpdateEvent | ProbeEvent | DeleteEvent
-)
-```
-
-- [ ] **Step 4: Implement deterministic replay with probe copies**
-
-```python
-# src/ratemem/lifecycle/replay.py
-from __future__ import annotations
-
-from dataclasses import dataclass
-
-from ratemem.lifecycle.events import (
-    CreateEvent,
-    DeleteEvent,
-    LifecycleEvent,
-    ProbeEvent,
-    ReadEvent,
-    UpdateEvent,
-)
-from ratemem.state.model import MemoryState
-from ratemem.state.store import BudgetExceeded, PacketStore
-
-
-@dataclass(frozen=True, slots=True)
-class ReplayResult:
-    state: MemoryState
-    probe_sizes: tuple[int, ...]
-    errors: tuple[str, ...]
-
-
-def replay(events: tuple[LifecycleEvent, ...], budget_bytes: int) -> ReplayResult:
-    store = PacketStore.empty(budget_bytes)
-    probes: list[int] = []
-    errors: list[str] = []
-    for index, event in enumerate(events):
-        if isinstance(event, CreateEvent):
-            try:
-                store = store.create(event.handle, event.base_payload, created_at=index)
-            except BudgetExceeded:
-                errors.append(f"{event.event_id}:budget-exceeded:{event.handle}")
-            except ValueError:
-                errors.append(f"{event.event_id}:duplicate-handle:{event.handle}")
-        elif isinstance(event, ReadEvent):
-            try:
-                store, _ = store.read(event.handle, update_usage=True)
-            except KeyError:
-                errors.append(f"{event.event_id}:stale-handle:{event.handle}")
-        elif isinstance(event, UpdateEvent):
-            try:
-                store = store.replace(event.handle, event.base_payload, attachments=())
-            except KeyError:
-                errors.append(f"{event.event_id}:stale-handle:{event.handle}")
-            except BudgetExceeded:
-                errors.append(f"{event.event_id}:budget-exceeded:{event.handle}")
-        elif isinstance(event, ProbeEvent):
-            try:
-                snapshot, _ = store.read(event.handle, update_usage=False)
-                probes.append(snapshot.state.serialized_bytes)
-            except KeyError:
-                errors.append(f"{event.event_id}:stale-handle:{event.handle}")
-        elif isinstance(event, DeleteEvent):
-            try:
-                store = store.delete(event.handle)
-            except KeyError:
-                errors.append(f"{event.event_id}:stale-handle:{event.handle}")
-        else:
-            raise TypeError(f"unsupported event: {type(event).__name__}")
-    return ReplayResult(store.state, tuple(probes), tuple(errors))
-```
-
-- [ ] **Step 5: Run lifecycle tests and commit**
-
-Run: `uv run pytest tests/lifecycle -q`
-
-Expected: `4 passed`.
+Expected: every checked-in lifecycle test, including both replay-initialization regressions, passes
+and the static checks exit 0.
 
 ```bash
 git add src/ratemem/lifecycle tests/lifecycle
@@ -2021,244 +1338,44 @@ git commit -m "feat: add deterministic lifecycle replay"
 - Create: `tests/artifacts/test_schema.py`
 - Create: `tests/test_cli.py`
 
-The `/artifacts/` ignore rule must stay root-anchored so nested artifact source and test packages remain tracked and scanned.
+The `/artifacts/` ignore rule must stay root-anchored; nested artifact source and test packages remain tracked and scanned.
+This task is also a freeze-and-verify step: the exact checked-in files listed above are normative.
+Do not recreate the manifest or smoke command from an inline skeleton; the earlier compact versions
+omitted security and end-to-end contract checks.
 
-- [ ] **Step 1: Write artifact redaction and CLI smoke tests**
+- [ ] **Step 1: Audit the exact checked-in artifact and smoke tests**
 
-```python
-# tests/artifacts/test_schema.py
-from ratemem.artifacts.schema import AttemptManifest
+Use `tests/artifacts/test_schema.py` and `tests/test_cli.py` as the executable test inventory.
+The artifact suite must retain recursive credential preflight; sanitized failures that do not echo
+rejected input; exact built-in scalar/container acceptance; rejection without adversarial protocol
+dispatch; duplicate JSON-key rejection at every depth; guarded validation, copying, mutation, and
+serialization boundaries; disabled unchecked construction; subclass rejection; and the
+root-anchored artifact ignore rule.
 
+The smoke suite must retain deterministic module and installed entry points from an external
+directory, selected-prefix shape/finiteness and strict-improvement checks, lifecycle probe
+execution, causal pre-screen-before-allocation order, and an `AttemptManifest` JSON round trip.
 
-def test_manifest_rejects_secret_shaped_values() -> None:
-    try:
-        AttemptManifest(
-            run_id="cpu-smoke",
-            git_revision="f" * 40,
-            config_hash="a" * 64,
-            status="passed",
-            notes="token " + "ak-" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
-        )
-    except ValueError as exc:
-        assert "credential-shaped" in str(exc)
-    else:
-        raise AssertionError("credential-shaped value was accepted")
-```
+- [ ] **Step 2: Verify the hardened manifest boundary**
 
-```python
-# tests/test_cli.py
-import json
-import subprocess
-import sys
-from typing import Any
+Review the exact checked-in `src/ratemem/artifacts/schema.py` against
+`docs/contracts/core-interface.md`. `AttemptManifest.model_validate_json` is the supported
+credential-safe raw-JSON entry point. Preserve duplicate-key rejection, recursive scanning,
+sanitized `ValidationError` construction, exact-type input handling that avoids overrideable
+protocol dispatch, frozen/extra-forbid behavior, revalidated `model_copy`, guarded outbound
+serialization, and disabled `model_construct`. Do not reduce this implementation to a field
+validator over a regular expression.
 
-import pytest
+- [ ] **Step 3: Verify the self-contained CPU smoke boundary**
 
-import ratemem.cli as cli
+Review the exact checked-in `src/ratemem/cli.py` and `tests/test_cli.py` together. The command
+must perform progressive encode/decode with strict selected-prefix improvement; transactional
+storage with byte-exact accounting; `prescreen_certified_oracle` before
+`allocate_snapshot`; a read-only lifecycle probe; and a supported manifest JSON round trip.
+Success prints one deterministic sorted JSON line and performs no network, GPU, Modal, or credential
+operation.
 
-_EXPECTED = {
-    "budget_bytes": 8192,
-    "serialized_bytes": 403,
-    "status": "passed",
-}
-
-
-def test_core_smoke_command() -> None:
-    result = subprocess.run(
-        [sys.executable, "-m", "ratemem.cli", "smoke-core"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(result.stdout)
-    assert payload == _EXPECTED
-    assert payload["serialized_bytes"] <= payload["budget_bytes"]
-
-
-def test_smoke_prescreens_before_certified_allocation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-    captured: dict[str, object] = {}
-    screened_oracle = object()
-
-    def fake_prescreen(oracle: Any, budget_bytes: int) -> object:
-        calls.append("prescreen")
-        captured["packet_id"] = next(iter(oracle.bundles))
-        captured["budget_bytes"] = budget_bytes
-        return screened_oracle
-
-    def fake_allocate(oracle: object, budget_bytes: int) -> frozenset[str]:
-        calls.append("allocate")
-        assert oracle is screened_oracle
-        assert budget_bytes == captured["budget_bytes"]
-        packet_id = captured["packet_id"]
-        assert isinstance(packet_id, str)
-        return frozenset({packet_id})
-
-    monkeypatch.setattr(
-        cli, "prescreen_certified_oracle", fake_prescreen, raising=False
-    )
-    monkeypatch.setattr(cli, "allocate_snapshot", fake_allocate)
-
-    assert cli.smoke_core() == _EXPECTED
-    assert calls == ["prescreen", "allocate"]
-```
-
-- [ ] **Step 2: Run both tests and verify missing modules fail**
-
-Run: `uv run pytest tests/artifacts/test_schema.py tests/test_cli.py -q`
-
-Expected: collection fails importing `ratemem.artifacts.schema`.
-
-- [ ] **Step 3: Implement the validated attempt manifest**
-
-```python
-# src/ratemem/artifacts/schema.py
-import re
-from typing import Literal
-
-from pydantic import BaseModel, ConfigDict, field_validator
-
-_SECRET = re.compile(r"(?:ak|as)-[A-Za-z0-9_-]{20,}")
-
-
-class AttemptManifest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    run_id: str
-    git_revision: str
-    config_hash: str
-    status: Literal["passed", "failed", "interrupted"]
-    notes: str = ""
-
-    @field_validator("run_id", "git_revision", "config_hash", "notes")
-    @classmethod
-    def reject_credentials(cls, value: str) -> str:
-        if _SECRET.search(value):
-            raise ValueError("credential-shaped value is forbidden")
-        return value
-```
-
-- [ ] **Step 4: Implement the self-contained CPU smoke command**
-
-```python
-# src/ratemem/cli.py
-from __future__ import annotations
-
-import argparse
-import json
-
-import numpy as np
-
-from ratemem.allocation.objective import CoverageOracle, PacketBundle
-from ratemem.allocation.snapshot import (
-    allocate_snapshot,
-    prescreen_certified_oracle,
-)
-from ratemem.artifacts.schema import AttemptManifest
-from ratemem.codec.progressive import ProgressiveCodec
-from ratemem.lifecycle.events import CreateEvent, ProbeEvent
-from ratemem.lifecycle.replay import replay
-from ratemem.state.model import Incidence
-from ratemem.state.serialization import bundle_cost_bytes
-from ratemem.state.store import PacketStore
-
-
-def smoke_core() -> dict[str, int | str]:
-    budget = 8192
-    source = np.linspace(-1.0, 1.0, 16, dtype=np.float32)
-    encoded = ProgressiveCodec(group_size=4).encode("concept-a", source)
-    store = PacketStore.empty(budget).create(
-        "concept-a", encoded.base_payload, created_at=0
-    )
-    packet = encoded.packets[0].packet
-    incidence = Incidence("concept-a", packet.packet_id, gain_q=8)
-    store = store.attach(packet, incidence)
-    packet_bytes = bundle_cost_bytes(packet, (incidence,))
-    oracle = CoverageOracle(
-        {
-            packet.packet_id: PacketBundle(
-                packet.packet_id, packet_bytes, {"concept-a": (1.0,)}
-            )
-        },
-        {"concept-a": 1.0},
-        {"concept-a": (1.0,)},
-    )
-    screened_oracle = prescreen_certified_oracle(oracle, packet_bytes)
-    chosen = allocate_snapshot(screened_oracle, packet_bytes)
-    if chosen != frozenset({packet.packet_id}):
-        raise RuntimeError(
-            "snapshot allocator rejected the only feasible useful packet"
-        )
-
-    selected = encoded.decode(packet_count=1)
-    if selected.shape != encoded.shape or not np.all(np.isfinite(selected)):
-        raise RuntimeError("decoded selected prefix is nonfinite or misshaped")
-    base = encoded.decode(packet_count=0)
-    if base.shape != encoded.shape or not np.all(np.isfinite(base)):
-        raise RuntimeError("decoded base prefix is nonfinite or misshaped")
-    base_error = float(
-        np.mean(np.square(source.astype(np.float64) - base.astype(np.float64)))
-    )
-    selected_error = float(
-        np.mean(
-            np.square(source.astype(np.float64) - selected.astype(np.float64))
-        )
-    )
-    if not selected_error < base_error:
-        raise RuntimeError(
-            "selected prefix did not strictly improve reconstruction error"
-        )
-
-    lifecycle = replay(
-        (
-            CreateEvent("smoke-create", "lifecycle-a", b"base"),
-            ProbeEvent("smoke-probe", "lifecycle-a"),
-        ),
-        budget_bytes=budget,
-    )
-    lifecycle_record = lifecycle.state.bases["lifecycle-a"]
-    if (
-        lifecycle.errors
-        or lifecycle_record.reads != 0
-        or lifecycle.state.serialized_bytes > budget
-        or lifecycle.probe_sizes != (lifecycle.state.serialized_bytes,)
-    ):
-        raise RuntimeError("lifecycle create-probe smoke invariant failed")
-
-    manifest = AttemptManifest(
-        run_id="cpu-smoke",
-        git_revision="0" * 40,
-        config_hash="0" * 64,
-        status="passed",
-    )
-    revalidated_manifest = AttemptManifest.model_validate_json(
-        manifest.model_dump_json()
-    )
-    if revalidated_manifest != manifest:
-        raise RuntimeError("attempt manifest failed its serialization round trip")
-
-    return {
-        "status": "passed",
-        "serialized_bytes": store.state.serialized_bytes,
-        "budget_bytes": budget,
-    }
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="ratemem")
-    parser.add_argument("command", choices=("smoke-core",))
-    args = parser.parse_args()
-    if args.command == "smoke-core":
-        print(json.dumps(smoke_core(), sort_keys=True))
-
-
-if __name__ == "__main__":
-    main()
-```
-
-- [ ] **Step 5: Run the full quality gate and commit**
+- [ ] **Step 4: Run the full quality and credential gate and commit**
 
 Run:
 
@@ -2289,10 +1406,13 @@ for ratemem_scan_root in artifacts run_log logs exports; do
 done
 ```
 
-Expected: all tests pass; Ruff/mypy exit 0; CLI prints a JSON object with `"status": "passed"`; both quiet credential scans exit 0. The tracked-tree scan covers root configuration and scripts, while the explicit generated-root scan includes ignored and hidden artifacts, logs, and exports.
+Expected: all tests pass; Ruff and mypy exit 0; the CLI prints a JSON object with
+`"status": "passed"`; both quiet credential scans exit 0. The tracked-tree scan covers root
+configuration and scripts, while the explicit generated-root scan includes ignored and hidden
+artifacts, logs, and exports.
 
 ```bash
-git add src/ratemem/artifacts src/ratemem/cli.py tests/artifacts tests/test_cli.py
+git add .gitignore src/ratemem/artifacts src/ratemem/cli.py tests/artifacts tests/test_cli.py
 git commit -m "feat: add core smoke artifact contract"
 ```
 
@@ -2324,7 +1444,12 @@ allocate_snapshot(oracle: CoverageOracle, budget_bytes: int,
 
 All store transitions are functional. encode_state is a fixed header plus length-framed canonical
 CBOR records. serialized_bytes equals the actual encoded length, and packet-bundle cost equals the
-measured state-length increment for a fixed admitted cohort. Probe reads never update usage.
+measured state-length increment for a fixed admitted cohort. Base, packet, and incidence identity
+fields are exact built-in nonempty strings. Base read/creation counters are exact built-in uint64
+integers and incidence gains are exact built-in int16 integers; booleans, subclasses, proxies, and
+noncanonical state mapping keys are rejected. Raw Packet construction does not certify its hash;
+PacketStore transitions and decode_state enforce the packet-ID-to-payload relation. Probe reads
+never update usage.
 Certified gains, group weights, request weights, and bundle costs are nonnegative. The release path
 causally pre-screens in descending exact singleton-density order. Its exact non-boolean integer cap
 must satisfy `1 <= max_bundles <= 24`; values above 24 are rejected. The certified ratio is relative

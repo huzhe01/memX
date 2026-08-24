@@ -153,6 +153,15 @@ where `q_i^0` is a small mandatory base code, `e_p` is an immutable quantized en
 
 Candidate packets are derived forward-only from the target-code residual. They are content-addressed by a canonical quantized payload hash. Exact payload matches are deduplicated; near matches may be shared only when a contract-tested error bound holds for every dependent concept. Packet payloads never mutate after admission. If a better packet is needed, the system adds a new version and atomically redirects chosen incidence records, preventing silent drift from in-place basis updates.
 
+At the canonical CPU-state boundary, every base handle, packet ID, and incidence handle/packet ID
+is an exact built-in nonempty string; string subclasses and proxy objects are rejected. Base read
+and creation counters are exact built-in unsigned 64-bit integers, and quantized incidence gain is
+an exact built-in signed 16-bit integer; booleans, integer subclasses, and spoofed numeric types
+are rejected. Base/packet mapping keys and both members of exact two-tuple incidence keys obey the
+same identity rule, and mapping values must be exact corresponding record instances rather than
+subclasses. Raw packet construction still does not certify a payload hash: store transitions and
+canonical decode enforce the packet-ID-to-payload relationship.
+
 The serialized state obeys
 
 \[
@@ -408,7 +417,9 @@ Mandatory unit/contract tests include:
 - no dense `Delta W` allocation, checked with peak-memory instrumentation;
 - trainable-weight save/load equivalence;
 - hard byte budget under randomized operation traces;
-- canonical packet hashing, exact deduplication, incidence/reference-count integrity, and atomic packet redirection;
+- exact built-in, nonempty state identities and mapping keys; exact built-in uint64 base counters
+  and int16 incidence gains with boolean/subclass/proxy rejection; canonical packet hashing, exact
+  deduplication, incidence/reference-count integrity, and atomic packet redirection;
 - stale-handle rejection, deletion state reclamation, and deterministic eviction/garbage collection;
 - scoring probes leave usage and memory bytes unchanged;
 - progressive decode is prefix-consistent, requires a canonical NPY base and exact global packet
