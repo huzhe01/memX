@@ -50,6 +50,32 @@ def _valid_incidence_row() -> list[object]:
     return ["concept-a", _valid_packet_row()[0], _INT16.pack(1)]
 
 
+def _noncanonical_section_artifacts() -> tuple[bytes, bytes, bytes]:
+    bases = (
+        _row(["concept-b", b"base-b", _UINT64.pack(0), _UINT64.pack(2)]),
+        _row(["concept-a", b"base-a", _UINT64.pack(0), _UINT64.pack(1)]),
+    )
+
+    packet_rows = [
+        [hashlib.sha256(payload).hexdigest(), payload]
+        for payload in (b"packet-a", b"packet-b")
+    ]
+    packet_rows.sort(key=lambda row: row[0])
+    packets = tuple(_row(row) for row in reversed(packet_rows))
+
+    canonical_packets = tuple(_row(row) for row in packet_rows)
+    incidences = tuple(
+        _row(["concept-a", row[0], _INT16.pack(index + 1)])
+        for index, row in enumerate(reversed(packet_rows))
+    )
+    incidence_artifact = _artifact(
+        bases=(_row(_valid_base_row()),),
+        packets=canonical_packets,
+        incidences=incidences,
+    )
+    return _artifact(bases=bases), _artifact(packets=packets), incidence_artifact
+
+
 def test_packet_hash_state_bytes_and_bundle_delta_are_exact() -> None:
     packet = packet_from_payload(b"enhancement")
     assert packet.packet_id == packet_from_payload(b"enhancement").packet_id
@@ -109,6 +135,18 @@ def test_packet_payload_and_references_are_checked_on_decode() -> None:
 def test_decode_rejects_nonexclusive_or_noncanonical_cbor_frame(record: bytes) -> None:
     with pytest.raises(ValueError):
         decode_state(_artifact(bases=(record,)))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    _noncanonical_section_artifacts(),
+    ids=("bases", "packets", "incidences"),
+)
+def test_decode_rejects_noncanonical_within_section_ordering(
+    payload: bytes,
+) -> None:
+    with pytest.raises(ValueError, match="serialized state is not canonical"):
+        decode_state(payload)
 
 
 @pytest.mark.parametrize(

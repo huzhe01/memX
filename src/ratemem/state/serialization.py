@@ -200,4 +200,7 @@ def decode_state(payload: bytes) -> MemoryState:
     for edge in incidences.values():
         if edge.handle not in bases or edge.packet_id not in packets:
             raise ValueError("dangling packet incidence")
-    return MemoryState(bases=bases, packets=packets, incidences=incidences)
+    state = MemoryState(bases=bases, packets=packets, incidences=incidences)
+    if encode_state(state) != payload:
+        raise ValueError("serialized state is not canonical")
+    return state
