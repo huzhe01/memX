@@ -133,7 +133,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 *.py[cod]
-artifacts/
+/artifacts/
 data/cache/
 ```
 
@@ -1494,11 +1494,14 @@ git commit -m "feat: add deterministic lifecycle replay"
 ### Task 8: Add credential-safe artifacts and an end-to-end CPU smoke command
 
 **Files:**
+- Modify: `.gitignore`
 - Create: `src/ratemem/artifacts/__init__.py`
 - Create: `src/ratemem/artifacts/schema.py`
 - Create: `src/ratemem/cli.py`
 - Create: `tests/artifacts/test_schema.py`
 - Create: `tests/test_cli.py`
+
+The `/artifacts/` ignore rule must stay root-anchored so nested artifact source and test packages remain tracked and scanned.
 
 - [ ] **Step 1: Write artifact redaction and CLI smoke tests**
 

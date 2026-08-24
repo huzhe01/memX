@@ -191,6 +191,34 @@ def test_json_escaped_credentials_are_preflighted(location: str) -> None:
     )
 
 
+@pytest.mark.parametrize("location", ["value", "key"])
+@pytest.mark.parametrize("payload_type", ["str", "bytes", "bytearray"])
+def test_public_json_boundary_preflights_malformed_raw_input(
+    location: str, payload_type: str
+) -> None:
+    credential = _synthetic_credential("as-")
+    if location == "value":
+        raw = '{"notes":"' + credential
+    else:
+        raw = '{"' + credential + '":'
+    payload: str | bytes | bytearray
+    if payload_type == "bytes":
+        payload = raw.encode("ascii")
+    elif payload_type == "bytearray":
+        payload = bytearray(raw, "ascii")
+    else:
+        payload = raw
+
+    _assert_credential_rejected(
+        lambda: AttemptManifest.model_validate_json(payload), credential
+    )
+
+
+def test_public_json_boundary_delegates_safe_malformed_input() -> None:
+    with pytest.raises(ValidationError, match="Invalid JSON"):
+        AttemptManifest.model_validate_json('{"notes":')
+
+
 @pytest.mark.parametrize(
     "scenario",
     [
@@ -297,6 +325,37 @@ def test_model_copy_validates_updates_and_unchecked_copies() -> None:
     )
 
 
+def test_model_copy_preserves_standard_fields_set_semantics() -> None:
+    manifest = AttemptManifest(
+        run_id="cpu-smoke",
+        git_revision="f" * 40,
+        config_hash="a" * 64,
+        status="passed",
+    )
+    expected_fields = {
+        "run_id",
+        "git_revision",
+        "config_hash",
+        "status",
+    }
+    expected_dump = manifest.model_dump(exclude_unset=True)
+
+    for copied in (
+        manifest.model_copy(),
+        manifest.model_copy(deep=True),
+        manifest.model_copy(update={}),
+    ):
+        assert copied.model_fields_set == expected_fields
+        assert copied.model_dump(exclude_unset=True) == expected_dump
+
+    updated = manifest.model_copy(update={"notes": "safe update"})
+    assert updated.model_fields_set == expected_fields | {"notes"}
+    assert updated.model_dump(exclude_unset=True) == {
+        **expected_dump,
+        "notes": "safe update",
+    }
+
+
 def test_model_construct_is_disabled_without_echoing_arguments() -> None:
     credential = _synthetic_credential()
     values = _valid_input()
@@ -387,3 +446,21 @@ def test_task8_plan_scans_tracked_and_generated_outputs() -> None:
     assert "rg --hidden --no-ignore -q" in plan
     for root in ("artifacts", "run_log", "logs", "exports"):
         assert root in plan
+
+
+def test_core_plan_root_anchors_artifacts_and_lists_gitignore_change() -> None:
+    plan = (
+        _REPOSITORY
+        / "docs/superpowers/plans/2026-08-24-ratemem-core-memory.md"
+    ).read_text(encoding="utf-8")
+    task_one = plan.split("### Task 1:", maxsplit=1)[1].split(
+        "### Task 2:", maxsplit=1
+    )[0]
+    task_eight = plan.split("### Task 8:", maxsplit=1)[1].split(
+        "### Task 9:", maxsplit=1
+    )[0]
+
+    assert "\n/artifacts/\n" in task_one
+    assert "\nartifacts/\n" not in task_one
+    assert "- Modify: `.gitignore`" in task_eight
+    assert "nested artifact source and test packages remain tracked and scanned" in task_eight

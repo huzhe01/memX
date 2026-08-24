@@ -96,6 +96,29 @@ class AttemptManifest(BaseModel):
     status: Literal["passed", "failed", "interrupted"]
     notes: str = ""
 
+    @classmethod
+    def model_validate_json(
+        cls,
+        json_data: str | bytes | bytearray,
+        *,
+        strict: bool | None = None,
+        context: Any | None = None,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ) -> Self:
+        """Validate through the credential-safe public JSON boundary.
+
+        Raw ``TypeAdapter.validate_json`` parsing happens outside this classmethod.
+        """
+        _reject_credentials(json_data)
+        return super().model_validate_json(
+            json_data,
+            strict=strict,
+            context=context,
+            by_alias=by_alias,
+            by_name=by_name,
+        )
+
     @model_validator(mode="wrap")
     @classmethod
     def preflight_credentials(
@@ -125,10 +148,14 @@ class AttemptManifest(BaseModel):
         update: Mapping[str, Any] | None = None,
         deep: bool = False,
     ) -> Self:
+        copied_fields = set(self.model_fields_set)
         values = copy.deepcopy(self.__dict__) if deep else dict(self.__dict__)
         if update is not None:
+            copied_fields.update(update)
             values.update(update)
-        return type(self).model_validate(values)
+        copied = type(self).model_validate(values)
+        object.__setattr__(copied, "__pydantic_fields_set__", copied_fields)
+        return copied
 
     @classmethod
     def model_construct(
