@@ -9,6 +9,9 @@ from ratemem.state.model import (
     MemoryState,
     Packet,
     _validate_identity,
+    _validate_incidence_record,
+    _validate_packet_record,
+    _validate_state_runtime,
 )
 
 
@@ -19,27 +22,18 @@ class BudgetExceeded(ValueError):
 def _validate_packet(packet: Packet) -> None:
     if type(packet) is not Packet:
         raise TypeError("packet must be an exact Packet instance")
+    _validate_packet_record(packet)
     if hashlib.sha256(packet.payload).hexdigest() != packet.packet_id:
         raise ValueError("packet hash mismatch")
 
 
 def _validate_state(state: MemoryState) -> None:
-    if type(state) is not MemoryState:
-        raise TypeError("state must be an exact MemoryState instance")
-    for packet in state.packets.values():
-        _validate_packet(packet)
-
-    referenced_packets: set[str] = set()
-    for incidence in state.incidences.values():
-        if (
-            incidence.handle not in state.bases
-            or incidence.packet_id not in state.packets
-        ):
-            raise ValueError("dangling packet incidence")
-        referenced_packets.add(incidence.packet_id)
-
-    if state.packets.keys() - referenced_packets:
-        raise ValueError("orphan packet")
+    _validate_state_runtime(
+        state,
+        require_references=True,
+        reject_orphans=True,
+        require_hashes=True,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +66,7 @@ class PacketStore:
     ) -> None:
         if type(incidence) is not Incidence:
             raise TypeError("incidence must be an exact Incidence instance")
+        _validate_incidence_record(incidence)
         if incidence.handle != handle:
             raise ValueError("incidence handle does not match operation")
         if incidence.packet_id != packet_id:

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
+
+_MAPPING_PROXY_TYPE: type[object] = type(MappingProxyType({}))
 
 
 def _owned_payload(payload: bytes | bytearray | memoryview) -> bytes:
@@ -24,6 +27,11 @@ def _validate_integer(name: str, value: object, lower: int, upper: int) -> None:
     if not lower <= value <= upper:
         width = "uint64" if lower == 0 else "int16"
         raise ValueError(f"{name} must fit {width}")
+
+
+def _validate_owned_payload(name: str, value: object) -> None:
+    if type(value) is not bytes:
+        raise TypeError(f"{name} payload must be exact bytes")
 
 
 def _validate_incidence_mapping_key(key: object) -> None:
@@ -89,45 +97,107 @@ class MemoryState:
         packets = dict(self.packets)
         incidences = dict(self.incidences)
 
-        for base_key in bases:
-            _validate_identity("base mapping key", base_key)
-        for packet_key in packets:
-            _validate_identity("packet mapping key", packet_key)
-        for incidence_key in incidences:
-            _validate_incidence_mapping_key(incidence_key)
-
-        if any(type(record) is not BaseRecord for record in bases.values()):
-            raise TypeError("bases values must be exact BaseRecord instances")
-        if any(type(packet) is not Packet for packet in packets.values()):
-            raise TypeError("packets values must be exact Packet instances")
-        if any(type(edge) is not Incidence for edge in incidences.values()):
-            raise TypeError("incidences values must be exact Incidence instances")
-
-        if len({record.handle for record in bases.values()}) != len(bases):
-            raise ValueError("duplicate embedded base identity")
-        if len({packet.packet_id for packet in packets.values()}) != len(packets):
-            raise ValueError("duplicate embedded packet identity")
-        if len(
-            {(edge.handle, edge.packet_id) for edge in incidences.values()}
-        ) != len(incidences):
-            raise ValueError("duplicate embedded incidence identity")
-
-        if any(key != record.handle for key, record in bases.items()):
-            raise ValueError("base mapping key mismatch")
-        if any(key != packet.packet_id for key, packet in packets.items()):
-            raise ValueError("packet mapping key mismatch")
-        if any(
-            key != (edge.handle, edge.packet_id)
-            for key, edge in incidences.items()
-        ):
-            raise ValueError("incidence mapping key mismatch")
-
         object.__setattr__(self, "bases", MappingProxyType(bases))
         object.__setattr__(self, "packets", MappingProxyType(packets))
         object.__setattr__(self, "incidences", MappingProxyType(incidences))
+        _validate_state_runtime(self)
 
     @property
     def serialized_bytes(self) -> int:
         from ratemem.state.serialization import encode_state
 
         return len(encode_state(self))
+
+
+def _validate_base_record(record: object) -> None:
+    if type(record) is not BaseRecord:
+        raise TypeError("bases values must be exact BaseRecord instances")
+    _validate_identity("handle", record.handle)
+    _validate_owned_payload("base", record.payload)
+    _validate_integer("reads", record.reads, 0, 0xFFFFFFFFFFFFFFFF)
+    _validate_integer("created_at", record.created_at, 0, 0xFFFFFFFFFFFFFFFF)
+
+
+def _validate_packet_record(packet: object) -> None:
+    if type(packet) is not Packet:
+        raise TypeError("packets values must be exact Packet instances")
+    _validate_identity("packet_id", packet.packet_id)
+    _validate_owned_payload("packet", packet.payload)
+
+
+def _validate_incidence_record(incidence: object) -> None:
+    if type(incidence) is not Incidence:
+        raise TypeError("incidences values must be exact Incidence instances")
+    _validate_identity("handle", incidence.handle)
+    _validate_identity("packet_id", incidence.packet_id)
+    _validate_integer("gain_q", incidence.gain_q, -0x8000, 0x7FFF)
+
+
+def _validate_state_runtime(
+    state: object,
+    *,
+    require_references: bool = False,
+    reject_orphans: bool = False,
+    require_hashes: bool = False,
+) -> None:
+    """Revalidate a state without normalizing or mutating any caller-owned value."""
+    if type(state) is not MemoryState:
+        raise TypeError("state must be an exact MemoryState instance")
+    if type(state.bases) is not _MAPPING_PROXY_TYPE:
+        raise TypeError("bases must be an owned immutable mapping")
+    if type(state.packets) is not _MAPPING_PROXY_TYPE:
+        raise TypeError("packets must be an owned immutable mapping")
+    if type(state.incidences) is not _MAPPING_PROXY_TYPE:
+        raise TypeError("incidences must be an owned immutable mapping")
+
+    for base_key in state.bases:
+        _validate_identity("base mapping key", base_key)
+    for packet_key in state.packets:
+        _validate_identity("packet mapping key", packet_key)
+    for incidence_key in state.incidences:
+        _validate_incidence_mapping_key(incidence_key)
+
+    for record in state.bases.values():
+        _validate_base_record(record)
+    for packet in state.packets.values():
+        _validate_packet_record(packet)
+    for edge in state.incidences.values():
+        _validate_incidence_record(edge)
+
+    if len({record.handle for record in state.bases.values()}) != len(state.bases):
+        raise ValueError("duplicate embedded base identity")
+    if len({packet.packet_id for packet in state.packets.values()}) != len(
+        state.packets
+    ):
+        raise ValueError("duplicate embedded packet identity")
+    if len(
+        {(edge.handle, edge.packet_id) for edge in state.incidences.values()}
+    ) != len(state.incidences):
+        raise ValueError("duplicate embedded incidence identity")
+
+    if any(key != record.handle for key, record in state.bases.items()):
+        raise ValueError("base mapping key mismatch")
+    if any(key != packet.packet_id for key, packet in state.packets.items()):
+        raise ValueError("packet mapping key mismatch")
+    if any(
+        key != (edge.handle, edge.packet_id)
+        for key, edge in state.incidences.items()
+    ):
+        raise ValueError("incidence mapping key mismatch")
+
+    if require_hashes:
+        for packet in state.packets.values():
+            if hashlib.sha256(packet.payload).hexdigest() != packet.packet_id:
+                raise ValueError("packet hash mismatch")
+
+    if require_references or reject_orphans:
+        referenced_packets: set[str] = set()
+        for edge in state.incidences.values():
+            if require_references and (
+                edge.handle not in state.bases
+                or edge.packet_id not in state.packets
+            ):
+                raise ValueError("dangling packet incidence")
+            referenced_packets.add(edge.packet_id)
+        if reject_orphans and state.packets.keys() - referenced_packets:
+            raise ValueError("orphan packet")

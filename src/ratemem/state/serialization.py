@@ -12,6 +12,9 @@ from ratemem.state.model import (
     MemoryState,
     Packet,
     _owned_payload,
+    _validate_incidence_record,
+    _validate_packet_record,
+    _validate_state_runtime,
 )
 
 _MAGIC = b"RTMEM001"
@@ -59,6 +62,9 @@ def packet_from_payload(payload: bytes | bytearray | memoryview) -> Packet:
 def bundle_cost_bytes(packet: Packet, incidences: tuple[Incidence, ...]) -> int:
     if not incidences:
         raise ValueError("packet bundle must contain at least one incidence")
+    _validate_packet_record(packet)
+    for edge in incidences:
+        _validate_incidence_record(edge)
     if any(edge.packet_id != packet.packet_id for edge in incidences):
         raise ValueError("bundle incidence points at another packet")
     if len({edge.handle for edge in incidences}) != len(incidences):
@@ -69,6 +75,7 @@ def bundle_cost_bytes(packet: Packet, incidences: tuple[Incidence, ...]) -> int:
 
 
 def encode_state(state: MemoryState) -> bytes:
+    _validate_state_runtime(state)
     bases = sorted(state.bases.values(), key=lambda item: item.handle)
     packets = sorted(state.packets.values(), key=lambda item: item.packet_id)
     incidences = sorted(
@@ -183,8 +190,6 @@ def decode_state(payload: bytes) -> MemoryState:
         packet = _decode_packet(take_row())
         if packet.packet_id in packets:
             raise ValueError("duplicate serialized state key")
-        if hashlib.sha256(packet.payload).hexdigest() != packet.packet_id:
-            raise ValueError("packet hash mismatch")
         packets[packet.packet_id] = packet
 
     incidences: dict[tuple[str, str], Incidence] = {}
@@ -197,10 +202,12 @@ def decode_state(payload: bytes) -> MemoryState:
 
     if offset != len(payload):
         raise ValueError("trailing bytes after memory state")
-    for edge in incidences.values():
-        if edge.handle not in bases or edge.packet_id not in packets:
-            raise ValueError("dangling packet incidence")
     state = MemoryState(bases=bases, packets=packets, incidences=incidences)
+    _validate_state_runtime(
+        state,
+        require_references=True,
+        require_hashes=True,
+    )
     if encode_state(state) != payload:
         raise ValueError("serialized state is not canonical")
     return state

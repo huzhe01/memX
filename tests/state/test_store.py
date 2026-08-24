@@ -1,3 +1,6 @@
+import hashlib
+from types import MappingProxyType
+
 import pytest
 
 from ratemem.state.model import BaseRecord, Incidence, MemoryState, Packet
@@ -29,12 +32,83 @@ class _MemoryStateSubclass(MemoryState):
     pass
 
 
+class _BaseRecordSubclass(BaseRecord):
+    pass
+
+
 class _PacketSubclass(Packet):
     pass
 
 
 class _IncidenceSubclass(Incidence):
     pass
+
+
+class _BytesSubclass(bytes):
+    pass
+
+
+class _TupleSubclass(tuple[str, str]):
+    pass
+
+
+class _MappingSubclass(dict[str, BaseRecord]):
+    pass
+
+
+def _raw_state(
+    *,
+    bases: object = MappingProxyType({}),
+    packets: object = MappingProxyType({}),
+    incidences: object = MappingProxyType({}),
+) -> MemoryState:
+    state = object.__new__(MemoryState)
+    object.__setattr__(state, "bases", bases)
+    object.__setattr__(state, "packets", packets)
+    object.__setattr__(state, "incidences", incidences)
+    return state
+
+
+def _raw_base(
+    *,
+    handle: object = "a",
+    payload: object = b"base",
+    reads: object = 0,
+    created_at: object = 1,
+    record_type: type[BaseRecord] = BaseRecord,
+) -> BaseRecord:
+    record = object.__new__(record_type)
+    object.__setattr__(record, "handle", handle)
+    object.__setattr__(record, "payload", payload)
+    object.__setattr__(record, "reads", reads)
+    object.__setattr__(record, "created_at", created_at)
+    return record
+
+
+def _raw_packet(
+    *,
+    packet_id: object,
+    payload: object,
+    record_type: type[Packet] = Packet,
+) -> Packet:
+    packet = object.__new__(record_type)
+    object.__setattr__(packet, "packet_id", packet_id)
+    object.__setattr__(packet, "payload", payload)
+    return packet
+
+
+def _raw_incidence(
+    *,
+    handle: object = "a",
+    packet_id: object,
+    gain_q: object = 1,
+    record_type: type[Incidence] = Incidence,
+) -> Incidence:
+    incidence = object.__new__(record_type)
+    object.__setattr__(incidence, "handle", handle)
+    object.__setattr__(incidence, "packet_id", packet_id)
+    object.__setattr__(incidence, "gain_q", gain_q)
+    return incidence
 
 
 @pytest.mark.parametrize(
@@ -371,3 +445,329 @@ def test_attach_rejects_record_subclasses(subclassed_value: str) -> None:
 
     with pytest.raises(TypeError, match="must be an exact"):
         store.attach(packet, incidence)
+
+
+def test_store_rejects_low_level_forged_embedded_key_mismatch() -> None:
+    base = BaseRecord("actual-handle", b"base", reads=0, created_at=1)
+    state = _raw_state(
+        bases=MappingProxyType({"wrong-key": base}),
+    )
+
+    with pytest.raises(ValueError, match="base mapping key mismatch"):
+        PacketStore(state=state, budget_bytes=4096)
+
+
+def test_store_rejects_low_level_forged_mapping_container() -> None:
+    base = BaseRecord("a", b"base", reads=0, created_at=1)
+    state = _raw_state(bases=_MappingSubclass({"a": base}))
+
+    with pytest.raises(TypeError, match="bases must be an owned immutable mapping"):
+        PacketStore(state=state, budget_bytes=4096)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid", "message"),
+    [
+        pytest.param(
+            "handle",
+            _StrSubclass("a"),
+            "handle must be a nonempty string",
+            id="str-subclass-handle",
+        ),
+        pytest.param(
+            "reads", True, "reads must be an integer", id="bool-reads"
+        ),
+        pytest.param(
+            "reads",
+            _IntSubclass(0),
+            "reads must be an integer",
+            id="int-subclass-reads",
+        ),
+        pytest.param(
+            "created_at",
+            True,
+            "created_at must be an integer",
+            id="bool-created-at",
+        ),
+        pytest.param(
+            "created_at",
+            _IntSubclass(1),
+            "created_at must be an integer",
+            id="int-subclass-created-at",
+        ),
+        pytest.param(
+            "payload",
+            bytearray(b"base"),
+            "base payload must be exact bytes",
+            id="mutable-payload",
+        ),
+        pytest.param(
+            "payload",
+            "base",
+            "base payload must be exact bytes",
+            id="nonbytes-payload",
+        ),
+        pytest.param(
+            "payload",
+            _BytesSubclass(b"base"),
+            "base payload must be exact bytes",
+            id="bytes-subclass-payload",
+        ),
+    ],
+)
+def test_store_revalidates_low_level_forged_base_fields(
+    field: str, invalid: object, message: str
+) -> None:
+    arguments: dict[str, object] = {
+        "handle": "a",
+        "payload": b"base",
+        "reads": 0,
+        "created_at": 1,
+    }
+    arguments[field] = invalid
+    base = _raw_base(**arguments)
+    state = _raw_state(bases=MappingProxyType({"a": base}))
+
+    with pytest.raises(TypeError, match=message):
+        PacketStore(state=state, budget_bytes=4096)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid", "message"),
+    [
+        pytest.param("reads", -1, "reads must fit uint64", id="negative-reads"),
+        pytest.param(
+            "created_at",
+            0x10000000000000000,
+            "created_at must fit uint64",
+            id="created-at-overflow",
+        ),
+    ],
+)
+def test_store_revalidates_low_level_forged_base_counter_ranges(
+    field: str, invalid: int, message: str
+) -> None:
+    arguments: dict[str, object] = {
+        "handle": "a",
+        "payload": b"base",
+        "reads": 0,
+        "created_at": 1,
+    }
+    arguments[field] = invalid
+    state = _raw_state(
+        bases=MappingProxyType({"a": _raw_base(**arguments)})
+    )
+
+    with pytest.raises(ValueError, match=message):
+        PacketStore(state=state, budget_bytes=4096)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid", "message"),
+    [
+        pytest.param(
+            "packet_id",
+            _StrSubclass("packet-id"),
+            "packet_id must be a nonempty string",
+            id="str-subclass-id",
+        ),
+        pytest.param(
+            "packet_id",
+            1,
+            "packet_id must be a nonempty string",
+            id="int-id",
+        ),
+        pytest.param(
+            "payload",
+            bytearray(b"packet"),
+            "packet payload must be exact bytes",
+            id="mutable-payload",
+        ),
+        pytest.param(
+            "payload",
+            "packet",
+            "packet payload must be exact bytes",
+            id="nonbytes-payload",
+        ),
+    ],
+)
+def test_store_revalidates_low_level_forged_packet_fields(
+    field: str, invalid: object, message: str
+) -> None:
+    payload = b"packet"
+    packet_id = hashlib.sha256(payload).hexdigest()
+    arguments: dict[str, object] = {
+        "packet_id": packet_id,
+        "payload": payload,
+    }
+    arguments[field] = invalid
+    packet = _raw_packet(**arguments)
+    base = BaseRecord("a", b"base", reads=0, created_at=1)
+    incidence = Incidence("a", packet_id, gain_q=1)
+    state = _raw_state(
+        bases=MappingProxyType({"a": base}),
+        packets=MappingProxyType({packet_id: packet}),
+        incidences=MappingProxyType({("a", packet_id): incidence}),
+    )
+
+    with pytest.raises(TypeError, match=message):
+        PacketStore(state=state, budget_bytes=4096)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid", "message"),
+    [
+        pytest.param(
+            "handle",
+            _StrSubclass("a"),
+            "handle must be a nonempty string",
+            id="str-subclass-handle",
+        ),
+        pytest.param(
+            "packet_id",
+            _StrSubclass("packet-id"),
+            "packet_id must be a nonempty string",
+            id="str-subclass-packet-id",
+        ),
+        pytest.param(
+            "gain_q", True, "gain_q must be an integer", id="bool-gain"
+        ),
+        pytest.param(
+            "gain_q",
+            _IntSubclass(1),
+            "gain_q must be an integer",
+            id="int-subclass-gain",
+        ),
+    ],
+)
+def test_store_revalidates_low_level_forged_incidence_fields(
+    field: str, invalid: object, message: str
+) -> None:
+    packet = packet_from_payload(b"packet")
+    arguments: dict[str, object] = {
+        "handle": "a",
+        "packet_id": packet.packet_id,
+        "gain_q": 1,
+    }
+    arguments[field] = invalid
+    incidence = _raw_incidence(**arguments)
+    base = BaseRecord("a", b"base", reads=0, created_at=1)
+    state = _raw_state(
+        bases=MappingProxyType({"a": base}),
+        packets=MappingProxyType({packet.packet_id: packet}),
+        incidences=MappingProxyType({("a", packet.packet_id): incidence}),
+    )
+
+    with pytest.raises(TypeError, match=message):
+        PacketStore(state=state, budget_bytes=4096)
+
+
+@pytest.mark.parametrize("gain_q", [-0x8001, 0x8000])
+def test_store_revalidates_low_level_forged_incidence_gain_range(
+    gain_q: int,
+) -> None:
+    packet = packet_from_payload(b"packet")
+    incidence = _raw_incidence(packet_id=packet.packet_id, gain_q=gain_q)
+    state = _raw_state(
+        bases=MappingProxyType(
+            {"a": BaseRecord("a", b"base", reads=0, created_at=1)}
+        ),
+        packets=MappingProxyType({packet.packet_id: packet}),
+        incidences=MappingProxyType({("a", packet.packet_id): incidence}),
+    )
+
+    with pytest.raises(ValueError, match="gain_q must fit int16"):
+        PacketStore(state=state, budget_bytes=4096)
+
+
+@pytest.mark.parametrize(
+    ("mapping_name", "state"),
+    [
+        pytest.param(
+            "bases",
+            _raw_state(
+                bases=MappingProxyType(
+                    {
+                        "a": _raw_base(
+                            record_type=_BaseRecordSubclass,
+                        )
+                    }
+                )
+            ),
+            id="base-record-subclass",
+        ),
+        pytest.param(
+            "packets",
+            _raw_state(
+                packets=MappingProxyType(
+                    {
+                        hashlib.sha256(b"packet").hexdigest(): _raw_packet(
+                            packet_id=hashlib.sha256(b"packet").hexdigest(),
+                            payload=b"packet",
+                            record_type=_PacketSubclass,
+                        )
+                    }
+                )
+            ),
+            id="packet-record-subclass",
+        ),
+        pytest.param(
+            "incidences",
+            _raw_state(
+                incidences=MappingProxyType(
+                    {
+                        ("a", "packet"): _raw_incidence(
+                            packet_id="packet",
+                            record_type=_IncidenceSubclass,
+                        )
+                    }
+                )
+            ),
+            id="incidence-record-subclass",
+        ),
+    ],
+)
+def test_store_rejects_low_level_forged_record_subclasses(
+    mapping_name: str, state: MemoryState
+) -> None:
+    with pytest.raises(TypeError, match=f"{mapping_name} values must be exact"):
+        PacketStore(state=state, budget_bytes=4096)
+
+
+def test_store_rejects_low_level_forged_incidence_key_subclass() -> None:
+    state = _raw_state(
+        incidences=MappingProxyType(
+            {
+                _TupleSubclass(("a", "packet")): Incidence(
+                    "a", "packet", gain_q=1
+                )
+            }
+        )
+    )
+
+    with pytest.raises(TypeError, match="incidence mapping key"):
+        PacketStore(state=state, budget_bytes=4096)
+
+
+def test_store_rejects_low_level_duplicate_embedded_base_identity() -> None:
+    state = _raw_state(
+        bases=MappingProxyType(
+            {
+                "a": BaseRecord("a", b"a", reads=0, created_at=1),
+                "b": _raw_base(handle="a", payload=b"b"),
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="duplicate embedded base identity"):
+        PacketStore(state=state, budget_bytes=4096)
+
+
+def test_store_preserves_valid_exact_state_identity_after_revalidation() -> None:
+    state = MemoryState(
+        bases={"a": BaseRecord("a", b"base", reads=0, created_at=1)}
+    )
+
+    store = PacketStore(state=state, budget_bytes=4096)
+
+    assert store.state is state

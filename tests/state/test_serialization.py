@@ -1,5 +1,6 @@
 import hashlib
 import struct
+from types import MappingProxyType
 
 import cbor2
 import pytest
@@ -87,6 +88,28 @@ def _valid_packet_row() -> list[object]:
 
 def _valid_incidence_row() -> list[object]:
     return ["concept-a", _valid_packet_row()[0], _INT16.pack(1)]
+
+
+def _low_level_state(
+    *,
+    bases: object = MappingProxyType({}),
+    packets: object = MappingProxyType({}),
+    incidences: object = MappingProxyType({}),
+) -> MemoryState:
+    state = object.__new__(MemoryState)
+    object.__setattr__(state, "bases", bases)
+    object.__setattr__(state, "packets", packets)
+    object.__setattr__(state, "incidences", incidences)
+    return state
+
+
+def _low_level_base(*, reads: object = 0) -> BaseRecord:
+    record = object.__new__(BaseRecord)
+    object.__setattr__(record, "handle", "concept-a")
+    object.__setattr__(record, "payload", b"base")
+    object.__setattr__(record, "reads", reads)
+    object.__setattr__(record, "created_at", 1)
+    return record
 
 
 def _noncanonical_section_artifacts() -> tuple[bytes, bytes, bytes]:
@@ -511,3 +534,51 @@ def test_state_rejects_record_subclasses(field: str, value: object) -> None:
 
     with pytest.raises(TypeError, match=f"{field} values must be exact"):
         MemoryState(**arguments)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("state", "error_type", "message"),
+    [
+        pytest.param(
+            _low_level_state(
+                bases=MappingProxyType(
+                    {
+                        "wrong-key": BaseRecord(
+                            "concept-a", b"base", reads=0, created_at=1
+                        )
+                    }
+                )
+            ),
+            ValueError,
+            "base mapping key mismatch",
+            id="embedded-key-mismatch",
+        ),
+        pytest.param(
+            _low_level_state(
+                bases=MappingProxyType(
+                    {"concept-a": _low_level_base(reads=True)}
+                )
+            ),
+            TypeError,
+            "reads must be an integer",
+            id="bool-counter",
+        ),
+        pytest.param(
+            _low_level_state(
+                bases={
+                    "concept-a": BaseRecord(
+                        "concept-a", b"base", reads=0, created_at=1
+                    )
+                }
+            ),
+            TypeError,
+            "bases must be an owned immutable mapping",
+            id="mutable-mapping-container",
+        ),
+    ],
+)
+def test_encode_revalidates_low_level_state_before_emitting_bytes(
+    state: MemoryState, error_type: type[Exception], message: str
+) -> None:
+    with pytest.raises(error_type, match=message):
+        encode_state(state)
