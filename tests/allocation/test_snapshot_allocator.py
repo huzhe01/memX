@@ -78,6 +78,45 @@ def test_allocator_factor_on_seeded_multiconcept_instances() -> None:
         )
 
 
+def test_density_ranking_preserves_subnormal_marginal_gains() -> None:
+    positive_ids = tuple(f"p{index}" for index in range(6))
+    bundles = {
+        **{
+            packet_id: PacketBundle(packet_id, cost_bytes=10, gains={"a": (5e-324,)})
+            for packet_id in positive_ids
+        },
+        "z": PacketBundle("z", cost_bytes=30, gains={"a": (0.0,)}),
+    }
+    oracle = CoverageOracle(
+        bundles,
+        request_weights={"a": 1.0},
+        group_weights={"a": (1.0,)},
+    )
+
+    chosen = allocate_snapshot(oracle, budget_bytes=60)
+    optimum = exhaustive_optimum(oracle, budget_bytes=60)
+
+    assert chosen == frozenset(positive_ids)
+    assert oracle.value(chosen) / oracle.value(optimum) >= 1.0 - 1.0 / math.e
+
+
+def test_density_ranking_supports_integer_costs_beyond_float_range() -> None:
+    huge_cost = 10**400
+    oracle = CoverageOracle(
+        bundles={
+            packet_id: PacketBundle(packet_id, huge_cost, {"a": (0.5,)})
+            for packet_id in ("z", "a")
+        },
+        request_weights={"a": 1.0},
+        group_weights={"a": (1.0,)},
+    )
+
+    chosen = allocate_snapshot(oracle, budget_bytes=huge_cost)
+
+    assert chosen == frozenset({"z"})
+    assert chosen == exhaustive_optimum(oracle, budget_bytes=huge_cost)
+
+
 def _single_group_oracle(packet_ids: tuple[str, ...]) -> CoverageOracle:
     return CoverageOracle(
         bundles={

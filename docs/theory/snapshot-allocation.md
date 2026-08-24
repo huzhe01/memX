@@ -21,12 +21,13 @@ The capped-linear function is concave and nondecreasing over a nonnegative modul
 term has diminishing returns; a nonnegative weighted sum preserves submodularity.
 
 `allocate_snapshot` enumerates every feasible seed of cardinality zero through three and completes
-each seed by recomputing exact marginal-gain-per-byte values after every accepted bundle. It returns
-the best completed seed, with deterministic tie breaking in favor of the lexicographically larger
-packet-ID tuple. This is the standard partial-enumeration knapsack algorithm used to obtain the
-`1 - 1/e` approximation for monotone submodular maximization under one modular knapsack constraint.
-Lazy evaluation is permitted only after a test shows it returns the identical sequence as exact
-recomputation.
+each seed by recomputing the implemented finite float marginal after every accepted bundle, then
+comparing exact rational densities formed by `Fraction.from_float(marginal) / cost_bytes`. It
+returns the best completed seed, with deterministic tie breaking in favor of the lexicographically
+larger packet-ID tuple. This is the standard partial-enumeration knapsack algorithm used to obtain
+the `1 - 1/e` approximation for monotone submodular maximization under one modular knapsack
+constraint. Lazy evaluation is permitted only after a test shows it returns the identical sequence
+as exact recomputation.
 
 Therefore, under the premises above,
 

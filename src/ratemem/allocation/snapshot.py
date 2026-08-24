@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fractions import Fraction
 from itertools import combinations
 
 from ratemem.allocation.objective import CoverageOracle
@@ -21,7 +22,7 @@ def _density_fill(
         ranked = sorted(
             remaining,
             key=lambda item: (
-                oracle.marginal(frozenset(selected), item)
+                Fraction.from_float(oracle.marginal(frozenset(selected), item))
                 / oracle.bundles[item].cost_bytes,
                 item,
             ),
