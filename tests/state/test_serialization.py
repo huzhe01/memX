@@ -18,6 +18,45 @@ _UINT64 = struct.Struct("<Q")
 _INT16 = struct.Struct("<h")
 
 
+class _IntSubclass(int):
+    pass
+
+
+class _StrSubclass(str):
+    pass
+
+
+class _TupleSubclass(tuple[str, str]):
+    pass
+
+
+class _BaseRecordSubclass(BaseRecord):
+    pass
+
+
+class _PacketSubclass(Packet):
+    pass
+
+
+class _IncidenceSubclass(Incidence):
+    pass
+
+
+class _UnsafeBaseRecord(BaseRecord):
+    def __post_init__(self) -> None:
+        pass
+
+
+class _UnsafePacket(Packet):
+    def __post_init__(self) -> None:
+        pass
+
+
+class _UnsafeIncidence(Incidence):
+    def __post_init__(self) -> None:
+        pass
+
+
 def _row(value: object) -> bytes:
     return cbor2.dumps(value, canonical=True)
 
@@ -295,3 +334,180 @@ def test_packet_from_payload_hashes_and_owns_the_same_bytes() -> None:
     assert type(packet.payload) is bytes
     assert packet.payload == b"packet"
     assert packet.packet_id == hashlib.sha256(packet.payload).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param(1, id="int"),
+        pytest.param(True, id="bool"),
+        pytest.param(_StrSubclass("concept-a"), id="str-subclass"),
+    ],
+)
+def test_base_record_requires_an_exact_string_handle(invalid: object) -> None:
+    with pytest.raises(TypeError, match="handle must be a nonempty string"):
+        BaseRecord(invalid, b"base", reads=0, created_at=1)  # type: ignore[arg-type]
+
+
+def test_base_record_rejects_an_empty_handle() -> None:
+    with pytest.raises(ValueError, match="handle must be a nonempty string"):
+        BaseRecord("", b"base", reads=0, created_at=1)
+
+
+@pytest.mark.parametrize("field", ["reads", "created_at"])
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param(True, id="bool"),
+        pytest.param(_IntSubclass(1), id="int-subclass"),
+        pytest.param(1.0, id="float"),
+    ],
+)
+def test_base_record_counters_require_exact_integers(
+    field: str, invalid: object
+) -> None:
+    arguments: dict[str, object] = {
+        "handle": "concept-a",
+        "payload": b"base",
+        "reads": 0,
+        "created_at": 1,
+    }
+    arguments[field] = invalid
+
+    with pytest.raises(TypeError, match=f"{field} must be an integer"):
+        BaseRecord(**arguments)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(1, id="int"),
+        pytest.param(True, id="bool"),
+        pytest.param(_StrSubclass("packet"), id="str-subclass"),
+    ],
+)
+def test_packet_requires_an_exact_nonempty_string_id(invalid: object) -> None:
+    error_type = ValueError if invalid == "" else TypeError
+    with pytest.raises(error_type, match="packet_id must be a nonempty string"):
+        Packet(invalid, b"packet")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field", ["handle", "packet_id"])
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(1, id="int"),
+        pytest.param(True, id="bool"),
+        pytest.param(_StrSubclass("identity"), id="str-subclass"),
+    ],
+)
+def test_incidence_requires_exact_nonempty_string_identities(
+    field: str, invalid: object
+) -> None:
+    arguments: dict[str, object] = {
+        "handle": "concept-a",
+        "packet_id": "packet",
+        "gain_q": 1,
+    }
+    arguments[field] = invalid
+    error_type = ValueError if invalid == "" else TypeError
+
+    with pytest.raises(error_type, match=f"{field} must be a nonempty string"):
+        Incidence(**arguments)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param(True, id="bool"),
+        pytest.param(_IntSubclass(1), id="int-subclass"),
+        pytest.param(1.0, id="float"),
+    ],
+)
+def test_incidence_gain_requires_an_exact_integer(invalid: object) -> None:
+    with pytest.raises(TypeError, match="gain_q must be an integer"):
+        Incidence("concept-a", "packet", invalid)  # type: ignore[arg-type]
+
+
+def test_state_rejects_nonexact_base_mapping_key() -> None:
+    base = BaseRecord("concept-a", b"base", reads=0, created_at=1)
+
+    with pytest.raises(TypeError, match="base mapping key"):
+        MemoryState(bases={_StrSubclass(base.handle): base})
+
+
+def test_state_rejects_nonexact_packet_mapping_key() -> None:
+    packet = packet_from_payload(b"packet")
+
+    with pytest.raises(TypeError, match="packet mapping key"):
+        MemoryState(packets={_StrSubclass(packet.packet_id): packet})
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param(
+            _TupleSubclass(("concept-a", "packet")), id="tuple-subclass"
+        ),
+        pytest.param(
+            (_StrSubclass("concept-a"), "packet"), id="str-subclass-member"
+        ),
+        pytest.param(("concept-a", 1), id="non-string-member"),
+    ],
+)
+def test_state_rejects_nonexact_incidence_mapping_key(
+    key: tuple[str, str],
+) -> None:
+    edge = Incidence("concept-a", "packet", gain_q=1)
+
+    with pytest.raises(TypeError, match="incidence mapping key"):
+        MemoryState(incidences={key: edge})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param(
+            "bases",
+            _BaseRecordSubclass("concept-a", b"base", reads=0, created_at=1),
+            id="validated-base-subclass",
+        ),
+        pytest.param(
+            "packets",
+            _PacketSubclass("packet", b"payload"),
+            id="validated-packet-subclass",
+        ),
+        pytest.param(
+            "incidences",
+            _IncidenceSubclass("concept-a", "packet", gain_q=1),
+            id="validated-incidence-subclass",
+        ),
+        pytest.param(
+            "bases",
+            _UnsafeBaseRecord("concept-a", b"base", reads=True, created_at=1),
+            id="unsafe-base-subclass",
+        ),
+        pytest.param(
+            "packets",
+            _UnsafePacket(_StrSubclass("packet"), b"payload"),
+            id="unsafe-packet-subclass",
+        ),
+        pytest.param(
+            "incidences",
+            _UnsafeIncidence("concept-a", "packet", gain_q=True),
+            id="unsafe-incidence-subclass",
+        ),
+    ],
+)
+def test_state_rejects_record_subclasses(field: str, value: object) -> None:
+    if field == "bases":
+        arguments = {"bases": {"concept-a": value}}
+    elif field == "packets":
+        arguments = {"packets": {"packet": value}}
+    else:
+        arguments = {"incidences": {("concept-a", "packet"): value}}
+
+    with pytest.raises(TypeError, match=f"{field} values must be exact"):
+        MemoryState(**arguments)  # type: ignore[arg-type]

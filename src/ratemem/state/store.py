@@ -3,7 +3,13 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from ratemem.state.model import BaseRecord, Incidence, MemoryState, Packet
+from ratemem.state.model import (
+    BaseRecord,
+    Incidence,
+    MemoryState,
+    Packet,
+    _validate_identity,
+)
 
 
 class BudgetExceeded(ValueError):
@@ -11,11 +17,15 @@ class BudgetExceeded(ValueError):
 
 
 def _validate_packet(packet: Packet) -> None:
+    if type(packet) is not Packet:
+        raise TypeError("packet must be an exact Packet instance")
     if hashlib.sha256(packet.payload).hexdigest() != packet.packet_id:
         raise ValueError("packet hash mismatch")
 
 
 def _validate_state(state: MemoryState) -> None:
+    if type(state) is not MemoryState:
+        raise TypeError("state must be an exact MemoryState instance")
     for packet in state.packets.values():
         _validate_packet(packet)
 
@@ -60,6 +70,8 @@ class PacketStore:
     def _validate_incidence(
         incidence: Incidence, handle: str, packet_id: str
     ) -> None:
+        if type(incidence) is not Incidence:
+            raise TypeError("incidence must be an exact Incidence instance")
         if incidence.handle != handle:
             raise ValueError("incidence handle does not match operation")
         if incidence.packet_id != packet_id:
@@ -73,6 +85,7 @@ class PacketStore:
         return {key: value for key, value in packets.items() if key in referenced}
 
     def create(self, handle: str, payload: bytes, created_at: int) -> PacketStore:
+        _validate_identity("handle", handle)
         if handle in self.state.bases:
             raise ValueError(f"handle already exists: {handle}")
         bases = dict(self.state.bases)
@@ -87,13 +100,16 @@ class PacketStore:
     ) -> PacketStore:
         if not bundle:
             raise ValueError("packet bundle must contain at least one incidence")
+        _validate_packet(packet)
+        for incidence in bundle:
+            if type(incidence) is not Incidence:
+                raise TypeError("incidence must be an exact Incidence instance")
         handles = [incidence.handle for incidence in bundle]
         if len(set(handles)) != len(handles):
             raise ValueError("packet bundle repeats a concept incidence")
         for incidence in bundle:
             if incidence.handle not in self.state.bases:
                 raise KeyError(incidence.handle)
-        _validate_packet(packet)
         for incidence in bundle:
             self._validate_incidence(incidence, incidence.handle, packet.packet_id)
         packets = dict(self.state.packets)
@@ -109,14 +125,15 @@ class PacketStore:
         payload: bytes,
         attachments: tuple[tuple[Packet, Incidence], ...],
     ) -> PacketStore:
+        _validate_identity("handle", handle)
         if handle not in self.state.bases:
             raise KeyError(handle)
-        packet_ids = [packet.packet_id for packet, _ in attachments]
-        if len(set(packet_ids)) != len(packet_ids):
-            raise ValueError("replacement repeats packet attachment")
         for packet, incidence in attachments:
             _validate_packet(packet)
             self._validate_incidence(incidence, handle, packet.packet_id)
+        packet_ids = [packet.packet_id for packet, _ in attachments]
+        if len(set(packet_ids)) != len(packet_ids):
+            raise ValueError("replacement repeats packet attachment")
         old = self.state.bases[handle]
         bases = dict(self.state.bases)
         bases[handle] = BaseRecord(handle, payload, old.reads, old.created_at)
@@ -135,6 +152,7 @@ class PacketStore:
     def read(
         self, handle: str, update_usage: bool = True
     ) -> tuple[PacketStore, BaseRecord]:
+        _validate_identity("handle", handle)
         record = self.state.bases[handle]
         if not update_usage:
             return self, record
@@ -143,6 +161,7 @@ class PacketStore:
         return self._checked(MemoryState(bases, self.state.packets, self.state.incidences)), record
 
     def delete(self, handle: str) -> PacketStore:
+        _validate_identity("handle", handle)
         if handle not in self.state.bases:
             raise KeyError(handle)
         bases = {key: value for key, value in self.state.bases.items() if key != handle}

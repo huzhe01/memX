@@ -10,7 +10,8 @@ from ratemem.lifecycle.events import (
     UpdateEvent,
 )
 from ratemem.lifecycle.replay import replay
-from ratemem.state.store import PacketStore
+from ratemem.state.model import MemoryState
+from ratemem.state.store import BudgetExceeded, PacketStore
 
 
 class _SpoofedStringType:
@@ -250,6 +251,29 @@ def test_replay_rejects_nan_budget_before_large_create() -> None:
             (CreateEvent(event_id="1", handle="a", base_payload=b"x" * 100_000),),
             budget_bytes=float("nan"),  # type: ignore[arg-type]
         )
+
+
+def test_replay_rejects_budget_below_empty_state_before_processing_events() -> None:
+    minimum_budget = MemoryState().serialized_bytes
+
+    with pytest.raises(BudgetExceeded):
+        replay(
+            (CreateEvent(event_id="1", handle="a", base_payload=b"base"),),
+            budget_bytes=minimum_budget - 1,
+        )
+
+
+def test_replay_records_create_failure_at_exact_empty_state_budget() -> None:
+    minimum_budget = MemoryState().serialized_bytes
+
+    result = replay(
+        (CreateEvent(event_id="1", handle="a", base_payload=b"base"),),
+        budget_bytes=minimum_budget,
+    )
+
+    assert result.state == MemoryState()
+    assert result.probe_sizes == ()
+    assert result.errors == ("1:budget-exceeded:a",)
 
 
 @given(

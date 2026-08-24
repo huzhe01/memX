@@ -1,11 +1,15 @@
 import pytest
 
 from ratemem.state.model import BaseRecord, Incidence, MemoryState, Packet
-from ratemem.state.serialization import encode_state, packet_from_payload
+from ratemem.state.serialization import decode_state, encode_state, packet_from_payload
 from ratemem.state.store import BudgetExceeded, PacketStore
 
 
 class _IntSubclass(int):
+    pass
+
+
+class _StrSubclass(str):
     pass
 
 
@@ -19,6 +23,18 @@ class _SpoofedIntType:
 
     def __rlt__(self, other: object) -> bool:
         return False
+
+
+class _MemoryStateSubclass(MemoryState):
+    pass
+
+
+class _PacketSubclass(Packet):
+    pass
+
+
+class _IncidenceSubclass(Incidence):
+    pass
 
 
 @pytest.mark.parametrize(
@@ -38,6 +54,15 @@ class _SpoofedIntType:
 def test_budget_requires_exact_non_bool_int(budget_bytes: object) -> None:
     with pytest.raises(TypeError, match="budget_bytes must be an integer"):
         PacketStore.empty(budget_bytes)  # type: ignore[arg-type]
+
+
+def test_create_rejects_non_string_handle_before_producing_noncanonical_state() -> None:
+    store = PacketStore.empty(256)
+
+    with pytest.raises(TypeError, match="handle must be a nonempty string"):
+        store.create(1, b"x", created_at=0)  # type: ignore[arg-type]
+
+    assert decode_state(encode_state(store.state)) == store.state
 
 
 def test_constructor_rejects_forged_packet_hash() -> None:
@@ -254,3 +279,95 @@ def test_attachment_identity_mismatches_are_atomic() -> None:
 
     assert store.state is original_state
     assert encode_state(store.state) == original_bytes
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param(1, id="int"),
+        pytest.param(True, id="bool"),
+        pytest.param(_IntSubclass(1), id="int-subclass"),
+        pytest.param(_StrSubclass("a"), id="str-subclass"),
+    ],
+)
+@pytest.mark.parametrize("operation", ["create", "replace", "read", "delete"])
+def test_store_identity_entrypoints_reject_nonexact_handles(
+    operation: str, invalid: object
+) -> None:
+    store = PacketStore.empty(4096).create("a", b"base", created_at=0)
+
+    with pytest.raises(TypeError, match="handle must be a nonempty string"):
+        if operation == "create":
+            store.create(invalid, b"other", created_at=1)  # type: ignore[arg-type]
+        elif operation == "replace":
+            store.replace(invalid, b"other", attachments=())  # type: ignore[arg-type]
+        elif operation == "read":
+            store.read(invalid, update_usage=False)  # type: ignore[arg-type]
+        else:
+            store.delete(invalid)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param(True, id="bool"),
+        pytest.param(_IntSubclass(1), id="int-subclass"),
+    ],
+)
+def test_store_create_rejects_nonexact_created_at(invalid: object) -> None:
+    with pytest.raises(TypeError, match="created_at must be an integer"):
+        PacketStore.empty(4096).create(
+            "a", b"base", created_at=invalid  # type: ignore[arg-type]
+        )
+
+
+def test_every_accepted_store_transition_roundtrips_canonically() -> None:
+    def assert_roundtrip(store: PacketStore) -> None:
+        payload = encode_state(store.state)
+        decoded = decode_state(payload)
+        assert decoded == store.state
+        assert encode_state(decoded) == payload
+
+    packet = packet_from_payload(b"shared")
+    stores = [PacketStore.empty(4096)]
+    stores.append(stores[-1].create("a", b"base-a", created_at=0))
+    stores.append(stores[-1].create("b", b"base-b", created_at=1))
+    stores.append(
+        stores[-1].attach_bundle(
+            packet,
+            (
+                Incidence("a", packet.packet_id, gain_q=1),
+                Incidence("b", packet.packet_id, gain_q=2),
+            ),
+        )
+    )
+    stores.append(stores[-1].read("a", update_usage=True)[0])
+    stores.append(stores[-1].replace("a", b"new-a", attachments=()))
+    stores.append(stores[-1].delete("b"))
+
+    for store in stores:
+        assert_roundtrip(store)
+
+
+def test_store_rejects_memory_state_subclasses() -> None:
+    with pytest.raises(TypeError, match="state must be an exact MemoryState"):
+        PacketStore(state=_MemoryStateSubclass(), budget_bytes=4096)
+
+
+@pytest.mark.parametrize("subclassed_value", ["packet", "incidence"])
+def test_attach_rejects_record_subclasses(subclassed_value: str) -> None:
+    raw_packet = packet_from_payload(b"packet")
+    packet = (
+        _PacketSubclass(raw_packet.packet_id, raw_packet.payload)
+        if subclassed_value == "packet"
+        else raw_packet
+    )
+    incidence = (
+        _IncidenceSubclass("a", packet.packet_id, gain_q=1)
+        if subclassed_value == "incidence"
+        else Incidence("a", packet.packet_id, gain_q=1)
+    )
+    store = PacketStore.empty(4096).create("a", b"base", created_at=0)
+
+    with pytest.raises(TypeError, match="must be an exact"):
+        store.attach(packet, incidence)
