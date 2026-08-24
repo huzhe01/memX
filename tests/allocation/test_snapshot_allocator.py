@@ -180,6 +180,7 @@ def test_allocator_factor_on_rounding_adversarial_instance() -> None:
     chosen = allocate_snapshot(oracle, budget_bytes=1)
     optimum = exhaustive_optimum(oracle, budget_bytes=1)
 
+    assert optimum == frozenset({"a-exact"})
     assert chosen == frozenset({"a-exact"})
     _assert_certified_ratio(oracle, chosen, optimum)
 

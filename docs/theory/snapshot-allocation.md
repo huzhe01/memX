@@ -96,12 +96,14 @@ Hypothesis, seeded-random, multigroup, subnormal, and rounding-adversarial insta
 conservative rational constant `6321205588285576 / 10**16`, which is strictly below `1 - 1/e`, and
 cross-multiply exact values without an additive epsilon. Feasibility is always checked in exact
 integer bytes. The rounding-adversarial allocator regression makes two singleton reports tie as
-`float` even though their exact binary-rational values differ, then compares the certified output
-with `exhaustive_optimum` through that same exact cross-multiplied ratio check. A separate regression
-matching the controller shape builds four concepts with eight distinct packets each (32 candidates),
-verifies a deterministic reduction to 24, and passes the reduced oracle to `allocate_snapshot`. If
-the premises or exact ratio checks fail, the paper removes the theorem claim rather than weakening
-a test after observing results.
+`float` even though their exact binary-rational values differ. It explicitly pins the exact
+`exhaustive_optimum` identity before applying the cross-multiplied ratio check to the certified
+output. That focused two-item case isolates rounded comparison; the exhaustive-grid, Hypothesis,
+and seeded multigroup checks exercise multi-item greedy completion. A separate regression matching
+the controller shape builds four concepts with eight distinct packets each (32 candidates), verifies
+a deterministic reduction to 24, and passes the reduced oracle to `allocate_snapshot`. If the
+premises or exact ratio checks fail, the paper removes the theorem claim rather than weakening a test
+after observing results.
 
 This is a conditional per-snapshot guarantee for fixed-cohort selection from the reduced set `C_t`
 of immutable bundles with exact modular costs and nonnegative past-only weights and gains. It is not
