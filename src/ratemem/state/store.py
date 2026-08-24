@@ -36,6 +36,31 @@ def _validate_state(state: MemoryState) -> None:
     )
 
 
+def _snapshot_state(state: MemoryState) -> MemoryState:
+    _validate_state(state)
+    snapshot = MemoryState(
+        bases={
+            key: BaseRecord(
+                record.handle,
+                record.payload,
+                record.reads,
+                record.created_at,
+            )
+            for key, record in state.bases.items()
+        },
+        packets={
+            key: Packet(packet.packet_id, packet.payload)
+            for key, packet in state.packets.items()
+        },
+        incidences={
+            key: Incidence(edge.handle, edge.packet_id, edge.gain_q)
+            for key, edge in state.incidences.items()
+        },
+    )
+    _validate_state(snapshot)
+    return snapshot
+
+
 @dataclass(frozen=True, slots=True)
 class PacketStore:
     state: MemoryState
@@ -46,12 +71,14 @@ class PacketStore:
             raise TypeError("budget_bytes must be an integer")
         if self.budget_bytes < 0:
             raise ValueError("budget_bytes must be nonnegative")
-        _validate_state(self.state)
-        if self.state.serialized_bytes > self.budget_bytes:
+        snapshot = _snapshot_state(self.state)
+        serialized_bytes = snapshot.serialized_bytes
+        if serialized_bytes > self.budget_bytes:
             raise BudgetExceeded(
-                f"state uses {self.state.serialized_bytes} bytes, "
+                f"state uses {serialized_bytes} bytes, "
                 f"budget is {self.budget_bytes}"
             )
+        object.__setattr__(self, "state", snapshot)
 
     @classmethod
     def empty(cls, budget_bytes: int) -> PacketStore:

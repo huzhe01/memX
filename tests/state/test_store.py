@@ -296,12 +296,14 @@ def test_read_uint64_overflow_is_atomic() -> None:
     record = BaseRecord("a", b"base", reads=0xFFFFFFFFFFFFFFFF, created_at=1)
     state = MemoryState(bases={record.handle: record})
     store = PacketStore(state=state, budget_bytes=state.serialized_bytes)
+    original_state = store.state
     original_bytes = encode_state(store.state)
 
     with pytest.raises(ValueError, match="reads must fit uint64"):
         store.read("a", update_usage=True)
 
-    assert store.state is state
+    assert store.state is original_state
+    assert store.state is not state
     assert encode_state(store.state) == original_bytes
 
 
@@ -763,11 +765,82 @@ def test_store_rejects_low_level_duplicate_embedded_base_identity() -> None:
         PacketStore(state=state, budget_bytes=4096)
 
 
-def test_store_preserves_valid_exact_state_identity_after_revalidation() -> None:
+def test_store_snapshots_valid_exact_state_after_revalidation() -> None:
     state = MemoryState(
         bases={"a": BaseRecord("a", b"base", reads=0, created_at=1)}
     )
 
     store = PacketStore(state=state, budget_bytes=4096)
 
-    assert store.state is state
+    assert store.state is not state
+    assert store.state == state
+    assert store.state.bases["a"] is not state.bases["a"]
+
+
+def test_store_snapshot_does_not_alias_mappingproxy_backing_dicts() -> None:
+    base = BaseRecord("a", b"base", reads=0, created_at=1)
+    packet = packet_from_payload(b"packet")
+    incidence = Incidence("a", packet.packet_id, gain_q=1)
+    bases = {"a": base}
+    packets = {packet.packet_id: packet}
+    incidences = {("a", packet.packet_id): incidence}
+    caller_state = _raw_state(
+        bases=MappingProxyType(bases),
+        packets=MappingProxyType(packets),
+        incidences=MappingProxyType(incidences),
+    )
+    budget_bytes = caller_state.serialized_bytes
+    store = PacketStore(state=caller_state, budget_bytes=budget_bytes)
+    stored_bytes = encode_state(store.state)
+
+    bases["a"] = BaseRecord("a", b"x" * budget_bytes, reads=0, created_at=1)
+    bases["b"] = BaseRecord("b", b"new", reads=0, created_at=2)
+    packets.clear()
+    incidences.clear()
+
+    assert caller_state.bases["a"].payload == b"x" * budget_bytes
+    assert "b" in caller_state.bases
+    assert not caller_state.packets
+    assert not caller_state.incidences
+    assert store.state.bases["a"].payload == b"base"
+    assert "b" not in store.state.bases
+    assert packet.packet_id in store.state.packets
+    assert ("a", packet.packet_id) in store.state.incidences
+    assert store.state is not caller_state
+    assert store.state.bases is not caller_state.bases
+    assert store.state.packets is not caller_state.packets
+    assert store.state.incidences is not caller_state.incidences
+    assert encode_state(store.state) == stored_bytes
+    assert store.state.serialized_bytes <= store.budget_bytes
+    assert decode_state(stored_bytes) == store.state
+
+
+def test_store_snapshot_does_not_alias_low_level_mutated_records() -> None:
+    base = BaseRecord("a", b"base", reads=0, created_at=1)
+    packet = packet_from_payload(b"packet")
+    incidence = Incidence("a", packet.packet_id, gain_q=1)
+    caller_state = MemoryState(
+        bases={"a": base},
+        packets={packet.packet_id: packet},
+        incidences={("a", packet.packet_id): incidence},
+    )
+    budget_bytes = caller_state.serialized_bytes
+    store = PacketStore(state=caller_state, budget_bytes=budget_bytes)
+    stored_bytes = encode_state(store.state)
+
+    object.__setattr__(base, "payload", b"x" * budget_bytes)
+    object.__setattr__(packet, "payload", b"tampered")
+    object.__setattr__(incidence, "gain_q", True)
+
+    assert caller_state.bases["a"].payload == b"x" * budget_bytes
+    assert caller_state.packets[packet.packet_id].payload == b"tampered"
+    assert caller_state.incidences[("a", packet.packet_id)].gain_q is True
+    assert store.state.bases["a"].payload == b"base"
+    assert store.state.packets[packet.packet_id].payload == b"packet"
+    assert store.state.incidences[("a", packet.packet_id)].gain_q == 1
+    assert store.state.bases["a"] is not base
+    assert store.state.packets[packet.packet_id] is not packet
+    assert store.state.incidences[("a", packet.packet_id)] is not incidence
+    assert encode_state(store.state) == stored_bytes
+    assert store.state.serialized_bytes <= store.budget_bytes
+    assert decode_state(stored_bytes) == store.state
