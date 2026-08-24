@@ -114,7 +114,6 @@ def _decode_json_input(value: object) -> str:
         return cast(str, value)
     if value_type is bytes or value_type is bytearray:
         raw = memoryview(cast(bytes | bytearray, value)).tobytes()
-        _scan_canonical(raw)
         decode_failed = False
         decoded = ""
         try:
@@ -122,6 +121,7 @@ def _decode_json_input(value: object) -> str:
         except Exception:
             decode_failed = True
         if decode_failed:
+            _scan_canonical(raw)
             raise _json_error()
         return decoded
     raise _unsupported_error()
@@ -170,8 +170,6 @@ class AttemptManifest(BaseModel):
         if cls is not AttemptManifest:
             raise _unsupported_error()
         raw_text = _decode_json_input(json_data)
-        _scan_canonical(raw_text)
-        _scan_canonical(_expand_json_unicode_escapes(raw_text))
 
         parse_failed = False
         parsed: object = None
@@ -180,6 +178,8 @@ class AttemptManifest(BaseModel):
         except Exception:
             parse_failed = True
         if parse_failed:
+            _scan_canonical(raw_text)
+            _scan_canonical(_expand_json_unicode_escapes(raw_text))
             raise _json_error()
 
         _preflight_manifest_input(parsed)

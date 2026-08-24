@@ -508,6 +508,18 @@ def test_json_escaped_credentials_are_preflighted(location: str) -> None:
     )
 
 
+def test_literal_unicode_escape_text_agrees_across_python_and_json() -> None:
+    literal = "\\" + "u0061" + "k" + "-" + _SYNTHETIC_SUFFIX
+    values = _valid_input()
+    values["notes"] = literal
+
+    from_python = AttemptManifest.model_validate(values)
+    from_json = AttemptManifest.model_validate_json(json.dumps(values))
+
+    assert from_python.notes == literal
+    assert from_json == from_python
+
+
 @pytest.mark.parametrize("location", ["value", "key"])
 @pytest.mark.parametrize("payload_type", ["str", "bytes", "bytearray"])
 def test_public_json_boundary_preflights_malformed_raw_input(
