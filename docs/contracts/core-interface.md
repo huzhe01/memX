@@ -80,10 +80,13 @@ ProgressiveCodec.encode(handle: str, code: FloatArray) -> EncodedCode
 ```
 
 Encoding is deterministic for finite, nonempty float32 input in the supported float16 range.
-Decoding validates the selected prefix, its content hashes, canonical group order and offsets, and
-the canonical little-endian float16 NPY base. `packet_count=0` decodes the base; larger valid
-prefixes apply that many residual packets. Malformation in an unselected suffix does not invalidate
-a shorter selected prefix.
+For every requested prefix, decoding validates the canonical little-endian float16 NPY base and the
+global packet-tuple cardinality implied by `shape` and `group_size`. Missing or extra suffix records
+therefore invalidate every prefix. Once those global checks pass, the decoder validates content
+hashes, canonical group order, offsets, and payload shape only for the selected prefix; payload,
+hash, or metadata malformation in an existing unselected suffix packet does not invalidate a
+shorter selected prefix. `packet_count=0` decodes the base; larger valid prefixes apply that many
+residual packets.
 
 ## Coverage and allocation
 
@@ -104,6 +107,12 @@ CoverageOracle.value(selected: frozenset[str]) -> float
 CoverageOracle.marginal(selected: frozenset[str], item: str) -> float
 CoverageOracle.cost(selected: frozenset[str]) -> int
 
+prescreen_certified_oracle(
+    oracle: CoverageOracle,
+    budget_bytes: int,
+    *,
+    max_bundles: int = 24,
+) -> CoverageOracle
 allocate_snapshot(
     oracle: CoverageOracle,
     budget_bytes: int,
@@ -128,13 +137,21 @@ nonnegative. Certification treats each normalized float as its exact binary rati
 `exact_value` and `exact_marginal` are the certification APIs. `value` and `marginal` are rounded,
 reporting-only floats and must not drive certified selection or theorem checks.
 
-For a fixed admitted cohort of immutable complete bundles with exact modular costs,
-`allocate_snapshot` performs exact-density partial enumeration and satisfies the conditional
-`1 - 1/e` monotone-submodular single-knapsack guarantee in
-`docs/theory/snapshot-allocation.md`. It uses deterministic ties in favor of the
-lexicographically larger packet ID or sorted packet-ID tuple. The certified allocator rejects more
-than 24 bundles by default; callers may explicitly raise `max_bundles`, and no heuristic fallback
-occurs automatically.
+For the release lifecycle, `prescreen_certified_oracle` first removes individually infeasible
+bundles, sorts the remainder by descending exact singleton marginal-gain density, and
+deterministically retains at most `max_bundles`. Ties favor the lexicographically larger packet ID.
+Its cap must be an exact non-boolean integer satisfying `1 <= max_bundles <= 24`; the default is 24,
+and values above 24 are rejected. Calling the input candidate pool `G_t` and the returned immutable
+ground set `C_t`, this causal pre-screen has no approximation guarantee relative to `G_t`. The new
+oracle preserves the request and group weights.
+
+For a fixed admitted cohort and that fixed reduced ground set `C_t`, `allocate_snapshot` performs
+exact-density partial enumeration and satisfies the conditional `1 - 1/e`
+monotone-submodular single-knapsack guarantee in `docs/theory/snapshot-allocation.md`. It uses
+deterministic ties in favor of the lexicographically larger packet ID or sorted packet-ID tuple. The
+certified allocator rejects more than 24 bundles by default; callers may explicitly raise
+`max_bundles` for bounded research instances, but the release lifecycle always pre-screens to the
+default cap. No heuristic fallback occurs automatically.
 
 `exhaustive_optimum` is a verification-only tiny-instance oracle. It has a hard 24-bundle ceiling,
 prefilters individually infeasible bundles, and rejects more than `2**18` remaining subset states
@@ -167,11 +184,14 @@ replay(events: tuple[LifecycleEvent, ...], budget_bytes: int) -> ReplayResult
 
 Events are frozen values with exact nonempty string identities; create/update events own their
 bytes. Replay accepts only the closed exact event types, starts from an empty bounded store, applies
-events in tuple order, and is deterministic. Reads increment usage; updates preserve prior usage;
-deletes reclaim only unreferenced packets. Duplicate-create, stale-handle, and budget failures are
-recorded deterministically without exceeding the byte budget. A probe is a read-only size
-observation: it appends the current `serialized_bytes` to `probe_sizes` without refreshing usage or
-changing state bytes.
+events in tuple order, and is deterministic. After exact nonnegative-integer budget validation,
+`budget_bytes` must be large enough for the canonical empty state
+(`MemoryState().serialized_bytes`); otherwise store initialization raises `BudgetExceeded` before
+any event is applied or a `ReplayResult` exists. Reads increment usage; updates preserve prior usage;
+deletes reclaim only unreferenced packets. Duplicate-create, stale-handle, and event-level
+create/update budget failures are recorded deterministically in the returned result without
+exceeding the byte budget. A probe is a read-only size observation: it appends the current
+`serialized_bytes` to `probe_sizes` without refreshing usage or changing state bytes.
 
 ## Attempt artifacts and CPU smoke boundary
 
@@ -197,16 +217,22 @@ smoke_core() -> dict[str, int | str]
 python -m ratemem.cli smoke-core
 ```
 
-`AttemptManifest` is frozen, forbids extra fields, revalidates instances and copies, and disables
-its public unchecked constructor. Its model-level Python validation and outbound serialization
-reject credential-shaped values without echoing rejected content.
+`AttemptManifest` is frozen and forbids extra fields. Its supported direct construction and
+`AttemptManifest.model_validate` boundaries validate exact manifest instances; its own
+`AttemptManifest.model_copy` override revalidates the copied data, and its own
+`AttemptManifest.model_construct` is disabled. Deliberate calls through `BaseModel` implementations
+or low-level object APIs are outside those guarantees; forged state is rejected when it re-enters a
+supported validation or outbound serialization boundary. Those supported model-level Python
+boundaries reject credential-shaped values without echoing rejected content.
 `AttemptManifest.model_validate_json` is the credential-safe public boundary for untrusted raw
-JSON. Raw `TypeAdapter.validate_json` and enclosing-model JSON parsing occur before this model
-schema and may retain malformed raw input, so they are not credential-safe raw-JSON entry points;
-this limitation does not imply that every valid adapter input is rejected.
+JSON. It rejects duplicate keys at every object depth before a value can be shadowed. Raw
+`TypeAdapter.validate_json` and enclosing-model JSON parsing occur before this model schema and may
+retain malformed raw input, so they are not credential-safe raw-JSON entry points; this limitation
+does not imply that every valid adapter input is rejected.
 
 `smoke-core` is a self-contained CPU-only deterministic contract check. It exercises progressive
-encode/decode with strict prefix improvement, functional storage and exact bytes, certified packet
-selection, a read-only lifecycle probe, and an `AttemptManifest` JSON round trip. Success emits one
+encode/decode with strict prefix improvement, functional storage and exact bytes, causal packet
+pre-screening followed by certified selection, a read-only lifecycle probe, and an
+`AttemptManifest` JSON round trip. Success emits one
 sorted JSON line with `status`, `serialized_bytes`, and `budget_bytes`, with serialized bytes no
 greater than the budget. It performs no network, GPU, Modal, or credential operation.

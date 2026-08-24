@@ -825,6 +825,15 @@ class ProgressiveCodec:
         return EncodedCode(handle, tuple(code.shape), base_stream.getvalue(), tuple(packets))
 ```
 
+Before this step is considered green, extend the starter to the frozen Gate 1 codec contract:
+`EncodedCode` owns `group_size`; every decode validates the exact canonical little-endian float16
+NPY base and the global packet cardinality implied by `shape` and `group_size`; missing or extra
+suffix packets invalidate even `decode(0)`. After those global checks, validate hashes, group order,
+offsets, body sizes, and finite values only through the requested prefix, so malformed payload/hash/
+metadata in an existing unselected suffix does not invalidate a shorter prefix. The canonical tests
+also cover float16 range boundaries, defensive byte ownership, and exact reserialization of the NPY
+base.
+
 - [ ] **Step 4: Add malformed-packet rejection coverage**
 
 Append this test to `tests/codec/test_progressive.py`:
@@ -1040,15 +1049,30 @@ git commit -m "feat: add shared packet coverage objective"
 
 ```python
 # tests/allocation/test_snapshot_allocator.py
-import math
 import random
+from fractions import Fraction
 from itertools import product
 
+import pytest
 from hypothesis import given, strategies as st
 
 from ratemem.allocation.objective import CoverageOracle, PacketBundle
 from ratemem.allocation.oracle import exhaustive_optimum
-from ratemem.allocation.snapshot import allocate_snapshot
+from ratemem.allocation.snapshot import (
+    allocate_snapshot,
+    prescreen_certified_oracle,
+)
+
+CERTIFIED_FACTOR_LOWER_BOUND = Fraction(6_321_205_588_285_576, 10**16)
+
+
+def _assert_certified_ratio(
+    oracle: CoverageOracle, chosen: frozenset[str], optimum: frozenset[str]
+) -> None:
+    assert (
+        oracle.exact_value(chosen) * CERTIFIED_FACTOR_LOWER_BOUND.denominator
+        >= oracle.exact_value(optimum) * CERTIFIED_FACTOR_LOWER_BOUND.numerator
+    )
 
 
 @given(
@@ -1063,11 +1087,12 @@ def test_allocator_meets_certified_factor(costs: list[int], values: list[float])
     }
     oracle = CoverageOracle(bundles, {"a": 1.0}, {"a": (1.0,)})
     budget = max(1, sum(costs[:size]) // 2)
-    chosen = allocate_snapshot(oracle, budget)
-    optimum = exhaustive_optimum(oracle, budget)
-    assert oracle.cost(chosen) <= budget
-    assert oracle.value(chosen) + 1e-9 >= (1.0 - 1.0 / math.e) * oracle.value(optimum)
-    assert allocate_snapshot(oracle, budget) == chosen
+    reduced = prescreen_certified_oracle(oracle, budget)
+    chosen = allocate_snapshot(reduced, budget)
+    optimum = exhaustive_optimum(reduced, budget)
+    assert reduced.cost(chosen) <= budget
+    _assert_certified_ratio(reduced, chosen, optimum)
+    assert allocate_snapshot(reduced, budget) == chosen
 
 
 def test_allocator_factor_on_exhaustive_scalar_grid() -> None:
@@ -1081,12 +1106,11 @@ def test_allocator_factor_on_exhaustive_scalar_grid() -> None:
             }
             oracle = CoverageOracle(bundles, {"a": 1.0}, {"a": (1.0,)})
             for budget in range(9):
-                chosen = allocate_snapshot(oracle, budget)
-                optimum = exhaustive_optimum(oracle, budget)
-                assert oracle.cost(chosen) <= budget
-                assert oracle.value(chosen) + 1e-9 >= (
-                    (1.0 - 1.0 / math.e) * oracle.value(optimum)
-                )
+                reduced = prescreen_certified_oracle(oracle, budget)
+                chosen = allocate_snapshot(reduced, budget)
+                optimum = exhaustive_optimum(reduced, budget)
+                assert reduced.cost(chosen) <= budget
+                _assert_certified_ratio(reduced, chosen, optimum)
 
 
 def test_allocator_factor_on_seeded_multiconcept_instances() -> None:
@@ -1113,11 +1137,83 @@ def test_allocator_factor_on_seeded_multiconcept_instances() -> None:
             },
         )
         budget = rng.randint(1, sum(bundle.cost_bytes for bundle in bundles.values()))
-        chosen = allocate_snapshot(oracle, budget)
-        optimum = exhaustive_optimum(oracle, budget)
-        assert oracle.cost(chosen) <= budget
-        assert oracle.value(chosen) + 1e-9 >= (
-            (1.0 - 1.0 / math.e) * oracle.value(optimum)
+        reduced = prescreen_certified_oracle(oracle, budget)
+        chosen = allocate_snapshot(reduced, budget)
+        optimum = exhaustive_optimum(reduced, budget)
+        assert reduced.cost(chosen) <= budget
+        _assert_certified_ratio(reduced, chosen, optimum)
+
+
+def test_prescreen_reduces_four_concepts_with_eight_packets_each() -> None:
+    concepts = tuple(f"concept-{index}" for index in range(4))
+    bundles = {
+        f"{concept}-packet-{packet_index}": PacketBundle(
+            f"{concept}-packet-{packet_index}",
+            cost_bytes=1,
+            gains={concept: ((packet_index + 1) / 8,)},
+        )
+        for concept in concepts
+        for packet_index in range(8)
+    }
+    oracle = CoverageOracle(
+        bundles,
+        request_weights={concept: 1.0 for concept in concepts},
+        group_weights={concept: (1.0,) for concept in concepts},
+    )
+
+    reduced = prescreen_certified_oracle(oracle, budget_bytes=4)
+    expected_ids = {
+        f"{concept}-packet-{packet_index}"
+        for concept in concepts
+        for packet_index in range(2, 8)
+    }
+    assert len(oracle.bundles) == 32
+    assert set(reduced.bundles) == expected_ids
+    assert len(reduced.bundles) == 24
+    chosen = allocate_snapshot(reduced, budget_bytes=4)
+    assert chosen <= expected_ids
+    assert reduced.cost(chosen) <= 4
+
+
+def test_rounding_cannot_change_certified_selection() -> None:
+    oracle = CoverageOracle(
+        bundles={
+            "a-exact": PacketBundle("a-exact", 1, {"a": (0.5, 2**-54)}),
+            "z-rounded": PacketBundle("z-rounded", 1, {"a": (0.5, 0.0)}),
+        },
+        request_weights={"a": 1.0},
+        group_weights={"a": (1.0, 1.0)},
+    )
+    assert oracle.value(frozenset({"a-exact"})) == oracle.value(
+        frozenset({"z-rounded"})
+    )
+    reduced = prescreen_certified_oracle(oracle, budget_bytes=1, max_bundles=1)
+    assert tuple(reduced.bundles) == ("a-exact",)
+
+
+@pytest.mark.parametrize("max_bundles", [0, -1, 25])
+def test_prescreen_rejects_caps_outside_one_through_24(max_bundles: int) -> None:
+    oracle = CoverageOracle(
+        {"p": PacketBundle("p", 1, {"a": (1.0,)})},
+        {"a": 1.0},
+        {"a": (1.0,)},
+    )
+    with pytest.raises(ValueError):
+        prescreen_certified_oracle(oracle, 1, max_bundles=max_bundles)
+
+
+@pytest.mark.parametrize("max_bundles", [True, 1.5, "24"])
+def test_prescreen_cap_requires_an_exact_integer(max_bundles: object) -> None:
+    oracle = CoverageOracle(
+        {"p": PacketBundle("p", 1, {"a": (1.0,)})},
+        {"a": 1.0},
+        {"a": (1.0,)},
+    )
+    with pytest.raises(TypeError):
+        prescreen_certified_oracle(
+            oracle,
+            1,
+            max_bundles=max_bundles,  # type: ignore[arg-type]
         )
 ```
 
@@ -1131,27 +1227,70 @@ Expected: collection fails importing `ratemem.allocation.oracle`.
 
 ```python
 # src/ratemem/allocation/oracle.py
+from __future__ import annotations
+
 from itertools import combinations
 
 from ratemem.allocation.objective import CoverageOracle
 
+DEFAULT_MAX_STATES = 2**18
 
-def exhaustive_optimum(oracle: CoverageOracle, budget_bytes: int) -> frozenset[str]:
+
+def _validate_budget(budget_bytes: int) -> None:
+    if type(budget_bytes) is not int:
+        raise TypeError("budget_bytes must be an integer byte count")
     if budget_bytes < 0:
         raise ValueError("budget_bytes must be nonnegative")
-    names = tuple(sorted(oracle.bundles))
-    if len(names) > 24:
+
+
+def _validate_max_states(max_states: int) -> None:
+    if type(max_states) is not int:
+        raise TypeError("max_states must be an integer")
+    if max_states <= 0:
+        raise ValueError("max_states must be positive")
+
+
+def exhaustive_optimum(
+    oracle: CoverageOracle,
+    budget_bytes: int,
+    *,
+    max_states: int = DEFAULT_MAX_STATES,
+) -> frozenset[str]:
+    _validate_budget(budget_bytes)
+    _validate_max_states(max_states)
+    all_names = tuple(sorted(oracle.bundles))
+    if len(all_names) > 24:
         raise ValueError("exhaustive oracle supports at most 24 packet bundles")
+    names = tuple(
+        item
+        for item in all_names
+        if oracle.bundles[item].cost_bytes <= budget_bytes
+    )
+    required_states = 1 << len(names)
+    if required_states > max_states:
+        raise ValueError(
+            f"exhaustive oracle requires {required_states} states; "
+            "increase max_states explicitly"
+        )
+    costs = {item: oracle.bundles[item].cost_bytes for item in names}
+    ascending_costs = tuple(sorted(costs.values()))
     best = frozenset[str]()
+    best_value = oracle.exact_value(best)
+    best_ids: tuple[str, ...] = ()
     for size in range(len(names) + 1):
+        if sum(ascending_costs[:size]) > budget_bytes:
+            break
         for rows in combinations(names, size):
+            candidate_cost = sum(costs[item] for item in rows)
+            if candidate_cost > budget_bytes:
+                continue
             candidate = frozenset(rows)
-            if oracle.cost(candidate) <= budget_bytes:
-                if (oracle.value(candidate), tuple(sorted(candidate))) > (
-                    oracle.value(best),
-                    tuple(sorted(best)),
-                ):
-                    best = candidate
+            candidate_value = oracle.exact_value(candidate)
+            candidate_ids = tuple(sorted(candidate))
+            if (candidate_value, candidate_ids) > (best_value, best_ids):
+                best = candidate
+                best_value = candidate_value
+                best_ids = candidate_ids
     return best
 ```
 
@@ -1159,51 +1298,152 @@ def exhaustive_optimum(oracle: CoverageOracle, budget_bytes: int) -> frozenset[s
 
 ```python
 # src/ratemem/allocation/snapshot.py
+from __future__ import annotations
+
+from dataclasses import dataclass
+from fractions import Fraction
 from itertools import combinations
 
 from ratemem.allocation.objective import CoverageOracle
 
+DEFAULT_MAX_BUNDLES = 24
+
+
+@dataclass(frozen=True, slots=True)
+class _FillResult:
+    selected: frozenset[str]
+    cost_bytes: int
+    exact_value: Fraction
+
+
+def _validate_budget(budget_bytes: int) -> None:
+    if type(budget_bytes) is not int:
+        raise TypeError("budget_bytes must be an integer byte count")
+    if budget_bytes < 0:
+        raise ValueError("budget_bytes must be nonnegative")
+
+
+def _validate_max_bundles(max_bundles: int) -> None:
+    if type(max_bundles) is not int:
+        raise TypeError("max_bundles must be an integer")
+    if max_bundles <= 0:
+        raise ValueError("max_bundles must be positive")
+
+
+def prescreen_certified_oracle(
+    oracle: CoverageOracle,
+    budget_bytes: int,
+    *,
+    max_bundles: int = DEFAULT_MAX_BUNDLES,
+) -> CoverageOracle:
+    _validate_budget(budget_bytes)
+    _validate_max_bundles(max_bundles)
+    if max_bundles > DEFAULT_MAX_BUNDLES:
+        raise ValueError("prescreen max_bundles cannot exceed certified default 24")
+
+    empty = frozenset[str]()
+    feasible = (
+        packet_id
+        for packet_id, bundle in oracle.bundles.items()
+        if bundle.cost_bytes <= budget_bytes
+    )
+    ranked = sorted(
+        feasible,
+        key=lambda packet_id: (
+            oracle.exact_marginal(empty, packet_id)
+            / oracle.bundles[packet_id].cost_bytes,
+            packet_id,
+        ),
+        reverse=True,
+    )
+    selected_ids = ranked[:max_bundles]
+    return CoverageOracle(
+        bundles={packet_id: oracle.bundles[packet_id] for packet_id in selected_ids},
+        request_weights=oracle.request_weights,
+        group_weights=oracle.group_weights,
+    )
+
 
 def _density_fill(
-    oracle: CoverageOracle, seed: frozenset[str], budget_bytes: int
-) -> frozenset[str]:
+    oracle: CoverageOracle,
+    seed: frozenset[str],
+    seed_cost: int,
+    budget_bytes: int,
+) -> _FillResult:
     selected = set(seed)
+    selected_cost = seed_cost
+    coverage = oracle._empty_exact_coverage()
+    for item in sorted(seed):
+        oracle._add_exact_gains(coverage, item)
     remaining = set(oracle.bundles) - selected
     while remaining:
-        ranked = sorted(
+        remaining = {
+            item
+            for item in remaining
+            if selected_cost + oracle.bundles[item].cost_bytes <= budget_bytes
+        }
+        if not remaining:
+            break
+        item = max(
             remaining,
             key=lambda item: (
-                oracle.marginal(frozenset(selected), item)
+                oracle._exact_marginal_from_coverage(coverage, item)
                 / oracle.bundles[item].cost_bytes,
                 item,
             ),
-            reverse=True,
         )
-        item = ranked[0]
         remaining.remove(item)
-        candidate = frozenset(selected | {item})
-        if oracle.cost(candidate) <= budget_bytes:
-            selected.add(item)
-    return frozenset(selected)
+        item_cost = oracle.bundles[item].cost_bytes
+        selected.add(item)
+        selected_cost += item_cost
+        oracle._add_exact_gains(coverage, item)
+    return _FillResult(
+        selected=frozenset(selected),
+        cost_bytes=selected_cost,
+        exact_value=oracle._exact_value_from_coverage(coverage),
+    )
 
 
-def allocate_snapshot(oracle: CoverageOracle, budget_bytes: int) -> frozenset[str]:
-    if budget_bytes < 0:
-        raise ValueError("budget_bytes must be nonnegative")
+def allocate_snapshot(
+    oracle: CoverageOracle,
+    budget_bytes: int,
+    *,
+    max_bundles: int = DEFAULT_MAX_BUNDLES,
+) -> frozenset[str]:
+    _validate_budget(budget_bytes)
+    _validate_max_bundles(max_bundles)
     names = tuple(sorted(oracle.bundles))
+    if len(names) > max_bundles:
+        raise ValueError(
+            f"certified allocator ground set exceeds max_bundles={max_bundles}; "
+            "raise the limit explicitly or call allocate_density_greedy_heuristic"
+        )
+
+    costs = {item: oracle.bundles[item].cost_bytes for item in names}
     best = frozenset[str]()
+    best_value = oracle.exact_value(best)
+    best_ids: tuple[str, ...] = ()
     for size in range(min(3, len(names)) + 1):
         for rows in combinations(names, size):
             seed = frozenset(rows)
-            if oracle.cost(seed) > budget_bytes:
+            seed_cost = sum(costs[item] for item in rows)
+            if seed_cost > budget_bytes:
                 continue
-            candidate = _density_fill(oracle, seed, budget_bytes)
-            if (oracle.value(candidate), tuple(sorted(candidate))) > (
-                oracle.value(best),
-                tuple(sorted(best)),
-            ):
-                best = candidate
+            result = _density_fill(oracle, seed, seed_cost, budget_bytes)
+            candidate_ids = tuple(sorted(result.selected))
+            if (result.exact_value, candidate_ids) > (best_value, best_ids):
+                best = result.selected
+                best_value = result.exact_value
+                best_ids = candidate_ids
     return best
+
+
+def allocate_density_greedy_heuristic(
+    oracle: CoverageOracle, budget_bytes: int
+) -> frozenset[str]:
+    """Return deterministic exact-density greedy output without a guarantee."""
+    _validate_budget(budget_bytes)
+    return _density_fill(oracle, frozenset(), 0, budget_bytes).selected
 ```
 
 - [ ] **Step 5: Run exhaustive randomized tests, document the proof contract, and commit**
@@ -1216,8 +1456,13 @@ implemented class names:
 
 At snapshot `t`, condition on the causal history and on a fixed admitted concept cohort. Base
 records and their metadata have already been reserved, leaving packet budget `b_t`. The finite
-ground set `G_t` contains immutable packet bundles. Bundle `p` contains one payload/hash and its
-complete prespecified incidence list; selecting individual incidences is not allowed.
+causal candidate set `G_t` contains immutable packet bundles. Bundle `p` contains one payload/hash
+and its complete prespecified incidence list; selecting individual incidences is not allowed. Before
+certified enumeration, `prescreen_certified_oracle` removes individually infeasible bundles and
+retains the highest-density bundles in descending exact singleton marginal-density order with
+deterministic packet-ID ties. Its exact non-boolean integer cap satisfies `1 <= max_bundles <= 24`,
+defaults to 24, and rejects larger values. Denote this fixed reduced ground set by `C_t`; the
+pre-screen has no approximation guarantee against the full `G_t`.
 
 The on-disk format has a fixed-size state header and length-framed canonical-CBOR records. Hence
 for this fixed cohort, `bundle_cost_bytes(packet, incidences)` is exactly the state-length increase
@@ -1233,25 +1478,28 @@ For nonnegative past-only request weights `omega[t,i]`, nonnegative locked group
 The capped-linear function is concave and nondecreasing over a nonnegative modular sum, so every
 term has diminishing returns; a nonnegative weighted sum preserves submodularity.
 
-`allocate_snapshot` enumerates every feasible seed of cardinality zero through three and completes
-each seed by recomputing exact marginal-gain-per-byte values after every accepted bundle. It returns
-the best completed seed, with deterministic packet-id tie breaking. This is the standard partial-
-enumeration knapsack algorithm used to obtain the `1 - 1/e` approximation for monotone submodular
-maximization under one modular knapsack constraint. Lazy evaluation is permitted only after a test
-shows it returns the identical sequence as exact recomputation.
+`allocate_snapshot` enumerates every feasible seed of cardinality zero through three from `C_t` and
+completes each seed by recomputing exact marginal-gain-per-byte values after every accepted bundle.
+It returns the best completed seed, with deterministic packet-id tie breaking. This is the standard
+partial-enumeration knapsack algorithm used to obtain the `1 - 1/e` approximation for monotone
+submodular maximization under one modular knapsack constraint. Lazy evaluation is permitted only
+after a test shows it returns the identical sequence as exact recomputation.
 
 Therefore, under the premises above,
 
-    F_t(X_t) >= (1 - 1/e) max_{X subset G_t, cost(X) <= b_t} F_t(X).
+    F_t(X_t) >= (1 - 1/e) max_{X subset C_t, cost(X) <= b_t} F_t(X).
 
-This is a conditional per-snapshot guarantee. Whole-concept admission or eviction, optional
-incidence dropping, switching penalties, hysteresis, learned unconstrained distortion, and any
+This is a conditional per-snapshot guarantee relative only to `C_t`. Full-pool pre-screen loss,
+whole-concept admission or eviction, optional incidence dropping, switching penalties, hysteresis,
+learned unconstrained distortion, and any
 future-aware competitive or dynamic-regret statement are outside the theorem. The future-aware
 lifecycle oracle is an empirical upper reference only.
 
 Mechanical release checks compare feasibility and the approximation ratio with exhaustive optima
-on enumerated and seeded-random tiny instances. If either the premises or ratio checks fail, the
-paper removes the theorem claim rather than changing the test after observing results.
+on the same reduced `C_t` for enumerated and seeded-random tiny instances. They use the conservative
+exact rational constant `6321205588285576 / 10**16`, strictly below `1 - 1/e`, cross-multiply
+`exact_value` results, and permit no additive epsilon. If either the premises or exact ratio checks
+fail, the paper removes the theorem claim rather than changing the test after observing results.
 ```
 
 Run:
@@ -1281,6 +1529,7 @@ git commit -m "feat: add certified snapshot allocator"
 
 ```python
 # tests/lifecycle/test_replay.py
+import pytest
 from hypothesis import given, strategies as st
 
 from ratemem.lifecycle.events import (
@@ -1291,6 +1540,23 @@ from ratemem.lifecycle.events import (
     UpdateEvent,
 )
 from ratemem.lifecycle.replay import replay
+from ratemem.state.model import MemoryState
+from ratemem.state.store import BudgetExceeded
+
+
+def test_empty_state_budget_failure_precedes_event_replay() -> None:
+    minimum = MemoryState().serialized_bytes
+    events = (CreateEvent(event_id="1", handle="a", base_payload=b"base"),)
+    with pytest.raises(BudgetExceeded):
+        replay(events, budget_bytes=minimum - 1)
+
+
+def test_event_budget_failure_is_recorded_after_store_initialization() -> None:
+    minimum = MemoryState().serialized_bytes
+    events = (CreateEvent(event_id="1", handle="a", base_payload=b"base"),)
+    result = replay(events, budget_bytes=minimum)
+    assert result.state == MemoryState()
+    assert result.errors == ("1:budget-exceeded:a",)
 
 
 def test_probe_does_not_refresh_usage_or_change_bytes() -> None:
@@ -1698,13 +1964,19 @@ PacketStore.read(handle: str, update_usage: bool) -> tuple[PacketStore, BaseReco
 PacketStore.delete(handle: str) -> PacketStore
 bundle_cost_bytes(packet: Packet, incidences: tuple[Incidence, ...]) -> int
 CoverageOracle.value(selected: frozenset[str]) -> float
-allocate_snapshot(oracle: CoverageOracle, budget_bytes: int) -> frozenset[str]
+prescreen_certified_oracle(oracle: CoverageOracle, budget_bytes: int,
+                           *, max_bundles: int = 24) -> CoverageOracle
+allocate_snapshot(oracle: CoverageOracle, budget_bytes: int,
+                  *, max_bundles: int = 24) -> frozenset[str]
 
 All store transitions are functional. encode_state is a fixed header plus length-framed canonical
 CBOR records. serialized_bytes equals the actual encoded length, and packet-bundle cost equals the
 measured state-length increment for a fixed admitted cohort. Probe reads never update usage.
-Certified gains, group weights, request weights, and bundle costs are nonnegative. Admission,
-switching cost, and future-aware regret remain outside the per-snapshot approximation statement.
+Certified gains, group weights, request weights, and bundle costs are nonnegative. The release path
+causally pre-screens in descending exact singleton-density order. Its exact non-boolean integer cap
+must satisfy `1 <= max_bundles <= 24`; values above 24 are rejected. The certified ratio is relative
+only to that reduced ground set. Full-pool pre-screen loss, admission, switching cost, and
+future-aware regret remain outside the per-snapshot approximation statement.
 ```
 
 - [ ] **Step 2: Mark only the paid-pilot probe items as implementation-ready in the design**

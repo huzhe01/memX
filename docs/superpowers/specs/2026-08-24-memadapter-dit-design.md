@@ -176,7 +176,7 @@ b_t=B-\sum_{i\in\mathcal A_t}
 \operatorname{bits}(q_i^0,h_i,\text{metadata}_i).
 \]
 
-Its finite ground set `G_t` contains resident packets plus packets proposed by the current event. Ground item `p` is an immutable **packet bundle**: one payload/hash and one prespecified list `A_{t,p}` of nonnegative concept incidences/gains. Selecting `p` installs every incidence in that list; optional per-incidence choices are not allowed in the theorem variant. Its exact modular cost is
+Its finite causal candidate pool `G_t` contains resident packets plus packets proposed by the current event. Ground item `p` is an immutable **packet bundle**: one payload/hash and one prespecified list `A_{t,p}` of nonnegative concept incidences/gains. Selecting `p` installs every incidence in that list; optional per-incidence choices are not allowed in the theorem variant. Its exact modular cost is
 
 \[
 c_{t,p}=\operatorname{bits}(e_p,\text{hash}_p)
@@ -195,14 +195,16 @@ F_t(X)=\sum_{i\in\mathcal A_t}\omega_{t,i}
 
 Because it is a nonnegative weighted sum of concave-over-modular coverage terms, `F_t` is normalized, monotone, and submodular. It remains nonseparable in packet variables because one packet can benefit several concepts for one payload cost.
 
-The theorem-bearing allocator enumerates seed sets of up to three packets and completes each feasible seed by exact marginal-density greedy, using lazy evaluation only when it returns identical choices. Under the fixed-cohort, exact-value-oracle assumptions, it targets the standard per-snapshot guarantee
+The release path applies a deterministic causal pre-screen before certified enumeration. It removes packets whose individual exact cost exceeds `b_t`, ranks every remaining packet by descending exact singleton marginal density `F_t({p})/c_{t,p}` with lexicographically larger packet IDs winning exact ties, and retains the highest-density `K=24`. Call the resulting fixed reduced ground set `C_t`. The pre-screen uses only `G_t`, `b_t`, and the already locked causal oracle, but it has **no approximation guarantee relative to the full pool `G_t`**. Full-pool heuristic and tiny exhaustive comparisons are reported empirically where tractable.
+
+The theorem-bearing allocator enumerates seed sets of up to three packets from `C_t` and completes each feasible seed by exact marginal-density greedy, using lazy evaluation only when it returns identical choices. Under the fixed-cohort, fixed-pre-screened-ground-set, exact-value-oracle assumptions, it targets the standard per-snapshot guarantee
 
 \[
 F_t(X_t)\ge(1-1/e)
-\max_{X\subseteq G_t:\sum_{p\in X}c_{t,p}\le b_t}F_t(X).
+\max_{X\subseteq C_t:\sum_{p\in X}c_{t,p}\le b_t}F_t(X).
 \]
 
-This is causal because `G_t`, costs, gains, and weights use only current/past information, but it is **not** a competitive or dynamic-regret guarantee against a future-aware trace oracle. Whole-base admission/eviction, switching penalties, hysteresis, optional incidence dropping, and unconstrained learned distortion remain empirical outer-policy variants and are not covered by the theorem. The future-aware oracle is an upper reference. If exhaustive small-instance tests or the proof do not validate the exact implemented formulation, the theoretical claim is removed and the work falls back to a systems benchmark.
+This is causal because `G_t`, `C_t`, costs, gains, and weights use only current/past information, but it is neither a guarantee against the full candidate pool nor a competitive or dynamic-regret guarantee against a future-aware trace oracle. Whole-base admission/eviction, switching penalties, hysteresis, optional incidence dropping, and unconstrained learned distortion remain empirical outer-policy variants and are not covered by the theorem. The future-aware oracle is an upper reference. If exhaustive small-instance tests or the proof do not validate the exact implemented formulation, the theoretical claim is removed and the work falls back to a systems benchmark.
 
 All proposals are ranked in code/packet space. Only the chosen allocation and at most one control allocation may receive a one-random-timestep denoising evaluation; these passes count against the segment-wide two-transformer-pass cap in Section 5. Full image generation is never inside an allocation decision.
 
@@ -293,7 +295,7 @@ Each claim has a preregistered calibration-chosen margin that is frozen before c
 |---|---|---|
 | Shared packet representation | Same amortizer + unshared progressive codec; online Share/VB-LoRA-style compression; DreamCache-style features | At fixed `B` and prompt non-inferiority margin, the paired 95% CI for request-weighted identity gain is positive |
 | Causal packet allocator | Same packet stream with LRU/LRUA, size-aware caching, separable rate allocation, and greedy shared-packet policies | Positive paired CI for request-weighted utility and lower oracle regret with active-quality non-inferiority |
-| Allocator guarantee | Exact locked surrogate optimum on small instances and declared snapshot assumptions | Mechanically checked proof plus feasible outputs attaining at least the certified approximation factor on exhaustive/random small instances; otherwise no theoretical claim |
+| Allocator guarantee | Exact locked surrogate optimum on the fixed reduced ground set for small instances and declared snapshot assumptions | Mechanically checked proof plus feasible outputs attaining at least the certified approximation factor on exhaustive/random reduced-set instances; report full-pool pre-screen loss empirically and otherwise make no full-pool theoretical claim |
 | Optimization-free trade-off | Best faithfully ported matched-backbone LoRA/DreamBooth configuration | Identity and prompt non-inferior within frozen margins, plus a prespecified insertion-latency advantage |
 | Autonomous lookup | Nearest-key threshold and learned novelty controls | Better risk--coverage/AURC under the same active state |
 | Optional composition | Naive adapter sum | Lower entity leakage with non-inferior per-entity fidelity |
@@ -409,8 +411,13 @@ Mandatory unit/contract tests include:
 - canonical packet hashing, exact deduplication, incidence/reference-count integrity, and atomic packet redirection;
 - stale-handle rejection, deletion state reclamation, and deterministic eviction/garbage collection;
 - scoring probes leave usage and memory bytes unchanged;
-- progressive decode is prefix-consistent and packet removal changes only declared dependent codes;
-- allocator outputs are feasible and meet the certified approximation factor against brute-force optima on exhaustive/random tiny instances, while satisfying every mechanically testable theorem premise;
+- progressive decode is prefix-consistent, requires a canonical NPY base and exact global packet
+  tuple cardinality, and isolates malformed payload/hash/metadata in an existing unselected suffix;
+  store packet reclamation changes only declared dependent codes;
+- allocator outputs are feasible and meet the certified approximation factor against exact optima
+  on the same reduced `C_t` for exhaustive/random tiny instances, while satisfying every
+  mechanically testable theorem premise; full-pool `G_t` pre-screen loss is evaluated separately
+  and empirically, with no certified ratio;
 - soft/hard codec agreement on controlled cases;
 - a tiny randomized SANA integration test on CPU;
 - one real-checkpoint inference and one random-timestep backward; and

@@ -184,7 +184,8 @@ controller:
   allow_rejection: true
   whole_concept_eviction: true
   switching_penalty: 0.0
-  theorem_scope: fixed_admitted_cohort_packets_only
+  certified_prescreen_max_bundles: 24
+  theorem_scope: fixed_admitted_cohort_prescreened_packets_only
 training:
   segment_length: 2
   maximum_query_events_per_segment: 2
@@ -276,7 +277,8 @@ class ControllerPolicy(BaseModel):
     allow_rejection: Literal[True]
     whole_concept_eviction: Literal[True]
     switching_penalty: Literal[0.0]
-    theorem_scope: Literal["fixed_admitted_cohort_packets_only"]
+    certified_prescreen_max_bundles: Literal[24]
+    theorem_scope: Literal["fixed_admitted_cohort_prescreened_packets_only"]
 
 
 class TrainingPolicy(BaseModel):
@@ -2068,9 +2070,16 @@ git commit -m "feat(method): calibrate causal packet utility"
 
 ```python
 # tests/unit/method/test_controller.py
+from collections import Counter
+
+import pytest
+
 from ratemem.allocation.objective import CoverageOracle, PacketBundle
+from ratemem.method import controller as controller_module
 from ratemem.method.controller import RateMemController
-from ratemem.state.model import MemoryState
+from ratemem.method.proposal import ConceptProposal, ImmutableBundleProposal
+from ratemem.state.model import BaseRecord, Incidence, MemoryState
+from ratemem.state.serialization import bundle_cost_bytes, packet_from_payload
 
 
 def value_oracle(cohort, bundles):
@@ -2088,6 +2097,69 @@ def value_oracle(cohort, bundles):
     )
 
 
+@pytest.fixture
+def four_concept_32_bundle_case():
+    bases = {}
+    packets = {}
+    incidences = {}
+    bundles = []
+    proposed_base = None
+    for event_index, handle in enumerate(("a", "b", "c", "d"), start=1):
+        base = BaseRecord(handle, f"base-{handle}".encode(), 0, event_index)
+        if handle == "d":
+            proposed_base = base
+        else:
+            bases[handle] = base
+        for packet_index in range(8):
+            packet = packet_from_payload(f"{handle}-packet-{packet_index}".encode())
+            incidence = Incidence(handle, packet.packet_id, 1)
+            bundles.append(ImmutableBundleProposal(
+                packet, (incidence,), bundle_cost_bytes(packet, (incidence,))
+            ))
+            if handle != "d":
+                packets[packet.packet_id] = packet
+                incidences[(handle, packet.packet_id)] = incidence
+    assert proposed_base is not None
+    state = MemoryState(bases=bases, packets=packets, incidences=incidences)
+    proposal = ConceptProposal("d", 4, proposed_base, tuple(bundles))
+    assert len(proposal.bundles) == 32
+    assert Counter(
+        edge.handle
+        for bundle in proposal.bundles
+        for edge in bundle.incidences
+    ) == Counter({"a": 8, "b": 8, "c": 8, "d": 8})
+    return RateMemController(1_000_000, value_oracle), state, proposal
+
+
+def test_controller_prescreens_four_concepts_with_eight_distinct_packets_each(
+    monkeypatch, four_concept_32_bundle_case
+) -> None:
+    controller, state, proposal = four_concept_32_bundle_case
+    observed_prescreens: list[tuple[int, int]] = []
+    observed_allocations: list[tuple[int, int]] = []
+    real_prescreen = controller_module.prescreen_certified_oracle
+    real_allocate = controller_module.allocate_snapshot
+
+    def recording_prescreen(oracle, budget_bytes, *, max_bundles=24):
+        observed_prescreens.append((len(oracle.bundles), max_bundles))
+        return real_prescreen(oracle, budget_bytes, max_bundles=max_bundles)
+
+    def recording_allocate(oracle, budget_bytes, *, max_bundles=24):
+        observed_allocations.append((len(oracle.bundles), max_bundles))
+        return real_allocate(oracle, budget_bytes, max_bundles=max_bundles)
+
+    monkeypatch.setattr(
+        controller_module, "prescreen_certified_oracle", recording_prescreen
+    )
+    monkeypatch.setattr(controller_module, "allocate_snapshot", recording_allocate)
+    decision = controller.apply_create(state, proposal)
+    assert decision.outcome == "created"
+    assert len(proposal.bundles) == 32
+    assert observed_prescreens == [(32, 24)]
+    assert observed_allocations == [(24, 24)]
+    assert decision.state.serialized_bytes <= 1_000_000
+
+
 def test_controller_never_exceeds_serialized_budget(proposer, shared_codes) -> None:
     controller = RateMemController(budget_bytes=700, oracle_factory=value_oracle)
     first = proposer.propose(MemoryState(), "a", shared_codes[0], event_index=1)
@@ -2095,7 +2167,7 @@ def test_controller_never_exceeds_serialized_budget(proposer, shared_codes) -> N
     second = proposer.propose(after_first.state, "b", shared_codes[1], event_index=2)
     after_second = controller.apply_create(after_first.state, second)
     assert after_second.state.serialized_bytes <= 700
-    assert after_second.theorem_scope == "fixed_admitted_cohort_packets_only"
+    assert after_second.theorem_scope == "fixed_admitted_cohort_prescreened_packets_only"
 
 
 def test_oversized_base_is_rejected_without_mutating_old_state(proposer, shared_codes) -> None:
@@ -2132,7 +2204,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ratemem.allocation.objective import CoverageOracle
-from ratemem.allocation.snapshot import allocate_snapshot
+from ratemem.allocation.snapshot import allocate_snapshot, prescreen_certified_oracle
 from ratemem.method.proposal import ConceptProposal, ImmutableBundleProposal
 from ratemem.state.model import BaseRecord, Incidence, MemoryState, Packet
 
@@ -2145,7 +2217,9 @@ class ControllerDecision:
     outcome: Literal["created", "updated", "deleted", "rejected", "read", "stale_handle"]
     evicted_handles: Sequence[str] = ()
     selected_packet_ids: Sequence[str] = ()
-    theorem_scope: Literal["fixed_admitted_cohort_packets_only"] = "fixed_admitted_cohort_packets_only"
+    theorem_scope: Literal["fixed_admitted_cohort_prescreened_packets_only"] = (
+        "fixed_admitted_cohort_prescreened_packets_only"
+    )
 
 
 def _without_handle(state: MemoryState, handle: str) -> MemoryState:
@@ -2167,11 +2241,22 @@ def _base_increment_bytes(bases: dict[str, BaseRecord], handle: str) -> int:
 
 
 class RateMemController:
-    def __init__(self, budget_bytes: int, oracle_factory: OracleFactory) -> None:
+    def __init__(
+        self,
+        budget_bytes: int,
+        oracle_factory: OracleFactory,
+        certified_prescreen_max_bundles: Literal[24] = 24,
+    ) -> None:
         if budget_bytes < 0:
             raise ValueError("budget_bytes must be nonnegative")
+        if (
+            type(certified_prescreen_max_bundles) is not int
+            or certified_prescreen_max_bundles != 24
+        ):
+            raise ValueError("certified prescreen cap must equal the locked value 24")
         self.budget_bytes = budget_bytes
         self.oracle_factory = oracle_factory
+        self.certified_prescreen_max_bundles = certified_prescreen_max_bundles
 
     def _admit_bases(
         self, state: MemoryState, proposal: ConceptProposal
@@ -2221,7 +2306,16 @@ class RateMemController:
         if set(oracle.bundles) != {row.packet.packet_id for row in bundles}:
             raise ValueError("oracle and immutable proposal ground sets differ")
         residual_budget = self.budget_bytes - base_state.serialized_bytes
-        selected = allocate_snapshot(oracle, residual_budget)
+        certified_oracle = prescreen_certified_oracle(
+            oracle,
+            residual_budget,
+            max_bundles=self.certified_prescreen_max_bundles,
+        )
+        selected = allocate_snapshot(
+            certified_oracle,
+            residual_budget,
+            max_bundles=self.certified_prescreen_max_bundles,
+        )
         packets: dict[str, Packet] = {}
         incidences: dict[tuple[str, str], Incidence] = {}
         by_id = {row.packet.packet_id: row for row in bundles}
@@ -2283,7 +2377,9 @@ from ratemem.method.controller import ControllerDecision, RateMemController
 
 
 def test_outer_policy_cannot_be_reported_as_theorem_covered() -> None:
-    assert ControllerDecision.__dataclass_fields__["theorem_scope"].default == "fixed_admitted_cohort_packets_only"
+    assert ControllerDecision.__dataclass_fields__["theorem_scope"].default == (
+        "fixed_admitted_cohort_prescreened_packets_only"
+    )
     source = inspect.getsource(RateMemController._admit_bases)
     assert "allocate_snapshot" not in source
     assert "switching" not in source
@@ -2295,7 +2391,19 @@ def test_read_only_probe_returns_identical_state(controller, populated_state) ->
     assert decision.state.serialized_bytes == populated_state.serialized_bytes
 ```
 
-Document in the controller docstring that whole-base admission/eviction/rejection, cohort projection after eviction, and any future hysteresis are empirical outer-policy operations. The certified claim begins only after the cohort, bundle list, costs, and residual budget are fixed.
+The two-argument `RateMemController` construction remains valid through the locked default. At the
+method-composition boundary, pass
+`policy.controller.certified_prescreen_max_bundles` as the third constructor argument; the
+controller stores it and passes it explicitly to both pre-screening and certified allocation. The
+core helper removes individually infeasible bundles, sorts the rest by descending exact singleton
+density, and retains the highest-density 24 with deterministic packet-ID ties. The
+`four_concept_32_bundle_case` fixture constructs a controller and contains three resident concepts
+with eight pairwise-distinct packets each and a fourth create proposal with eight further packets;
+the proposal therefore carries exactly 32 complete bundles. Document in the controller docstring
+that whole-base admission/eviction/rejection, cohort projection after eviction, causal pre-screening
+loss relative to the full pool, and any future hysteresis are empirical outer-policy operations.
+The certified claim begins only after the cohort, reduced bundle list, costs, and residual budget
+are fixed.
 
 - [ ] **Step 5: Run controller contracts and commit**
 
@@ -4746,7 +4854,11 @@ Expected: commit succeeds and `git status --short` prints nothing. This receipt 
 ## Self-review checklist completed while authoring
 
 - The method plan covers the blockwise base codec, learned reusable group/RVQ dictionary, per-concept quantized gains, deterministic hard and differentiable soft/STE paths, deterministic quantized-gain 60-to-8 selection with deployed tie order and actual hard decoding, measured soft--hard agreement, forward-only candidate generation, resident exact reuse, immutable full-incidence bundles, nonnegative causal utility calibration, exact serialized costs, empirical outer lifecycle control, the sole canonical baseline adapter contract, bounded sequential meta-training, checkpoint provenance, one-shot authorized training/materialization producers, reconciliation-bound final receipts, synthetic nonseparability, and end-to-end lifecycle contracts.
-- The theorem boundary is consistent with the core plan: only fixed-cohort packet selection uses the certified allocator; base admission, whole-concept eviction, rejection, cohort projection, switching behavior, and future-trace comparisons remain outside it.
+- The theorem boundary is consistent with the core plan: only fixed-cohort packet selection from
+  the causal pre-screened set `C_t` uses the certified allocator and its ratio is only against the
+  exact optimum on that same `C_t`; full-pool `G_t` pre-screen loss, base admission, whole-concept
+  eviction, rejection, cohort projection, switching behavior, and future-trace comparisons remain
+  outside it.
 - All tensor shapes use code dimension 480, 30 groups of width 16 in the locked scientific policy, 120 projections, and four atoms. Tiny tests declare their smaller dimensions explicitly.
 - Packet identities consistently use `(dictionary revision, group, stage, entry)`; incidence coefficients consistently use signed int16 storage with the frozen `1/256` gain step.
 - The implementation adds to the Python 3.11 `uv` project and retains `jsonschema==4.25.1`; it does not introduce a second environment or replace shared dependency pins.

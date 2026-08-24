@@ -499,8 +499,9 @@ claims:
   allocator_guarantee:
     section: method
     gate_id: allocator_guarantee
-    endpoint: certified_approximation_factor
-    comparator_source: exact_small_instance_optimum
+    endpoint: certified_reduced_set_approximation_factor
+    comparator_source: exact_reduced_set_optimum
+    ground_set_scope: causal_singleton_density_prescreen_C_t_max24
     positive_wording_requires_gate_pass: true
   optimization_free_tradeoff:
     section: results
@@ -516,8 +517,21 @@ claims:
 # tests/unit/paper/test_render.py
 from pathlib import Path
 
+import yaml
+
 from ratemem.paper.release import load_paper_release
 from ratemem.paper.render import build_generated_release
+
+
+def test_allocator_claim_registry_locks_reduced_ground_set() -> None:
+    registry = yaml.safe_load(Path("paper/claims.yaml").read_text(encoding="utf-8"))
+    claim = registry["claims"]["allocator_guarantee"]
+    assert claim["endpoint"] == "certified_reduced_set_approximation_factor"
+    assert claim["comparator_source"] == "exact_reduced_set_optimum"
+    assert (
+        claim["ground_set_scope"]
+        == "causal_singleton_density_prescreen_C_t_max24"
+    )
 
 
 def test_submission_macros_come_from_validated_cells(
@@ -651,9 +665,13 @@ lower bounds are positive, the prompt margin passes, and supporting 25%/75% poin
 nonnegative. An evaluated `status=fail` is not a build error: generate a claim-specific sentence such
 as `The preregistered comparison did not establish an improvement ...`, retain the estimate and CI,
 and select the section/abstract/conclusion wording required by `paper_disposition`. A failed
-`allocator_guarantee` disables theorem macros and emits the theorem-free empirical framing. Only a
-`blocked` or missing gate exits 2. Tests must cover all four allowed dispositions and prove that a failed
-gate cannot render positive verbs, while a passed gate cannot render the negative template.
+`allocator_guarantee` disables theorem macros and emits the theorem-free empirical framing. Even a
+passed row enables theorem macros only when the claim registry and evidence both bind
+`comparator_source=exact_reduced_set_optimum` and
+`ground_set_scope=causal_singleton_density_prescreen_C_t_max24`; missing or full-`G_t` scope is
+malformed evidence, not a theorem pass. Only a `blocked` or missing gate exits 2. Tests must cover
+all four allowed dispositions and prove that a failed gate cannot render positive verbs, while a
+passed gate cannot render the negative template.
 
 - [ ] **Step 6: Run focused tests and commit the only numeric ingress**
 
@@ -856,7 +874,8 @@ progressive enhancement packets across concepts.  Packet admission is
 nonseparable because one payload can improve several active concepts while its
 bytes are paid once.  A request-aware allocator optimizes a locked monotone
 submodular coverage surrogate under the residual packet budget; its certified
-variant is evaluated against exact small-instance optima.  We pair this method
+variant operates on a causal deterministically pre-screened candidate set and is
+evaluated against exact reduced-set small-instance optima.  We pair this method
 with byte-exact serialization, immutable operational traces, read-only scoring
 probes, matched independent-code, shared-subspace, and feature-cache controls,
 and artifact-derived statistical reporting.  \ifPaperResultsAvailable
@@ -1225,6 +1244,8 @@ def test_method_contains_exact_budget_and_theorem_qualifiers() -> None:
     text = Path("paper/sections/method.tex").read_text(encoding="utf-8")
     assert r"\sum_{p\in X}c_{t,p}\le b_t" in text
     assert r"1-1/e" in text
+    assert r"X\subseteq C_t" in text
+    assert "no approximation guarantee relative to the full" in text
     assert "fixed admitted cohort" in text
     assert "future-aware" in text
     assert "not a competitive or dynamic-regret guarantee" in text
@@ -1337,13 +1358,22 @@ F_t(X)=\sum_{i\in\mathcal A_t}\omega_{t,i}
 This nonnegative concave-over-modular coverage function is normalized,
 monotone, and submodular in packet bundles.
 
+Before certified enumeration, a causal deterministic pre-screen removes
+individually infeasible packets, sorts the remainder by descending exact
+singleton marginal density with lexicographically larger packet IDs winning
+exact ties, and retains the highest-density 24.  We denote this fixed reduced
+ground set by \(C_t\).
+The pre-screen has no approximation guarantee relative to the full \(G_t\), so
+its full-pool loss is an empirical quantity.
+
 The certified allocator enumerates feasible seed sets of at most three packets
-and completes each seed by exact marginal-density greedy.  Lazy evaluation is
-permitted only when it returns the identical sequence.  For a fixed admitted
-cohort and exact value oracle, the target statement is
+from \(C_t\) and completes each seed by exact marginal-density greedy.  Lazy
+evaluation is permitted only when it returns the identical sequence.  For a
+fixed admitted cohort, fixed reduced set, and exact value oracle, the target
+statement is
 \begin{equation}
   F_t(X_t)\ge(1-1/e)
-  \max_{X\subseteq G_t:\,\sum_{p\in X}c_{t,p}\le b_t}F_t(X).
+  \max_{X\subseteq C_t:\,\sum_{p\in X}c_{t,p}\le b_t}F_t(X).
   \label{eq:snapshot-guarantee}
 \end{equation}
 \ifAllocatorGuaranteeValidated
@@ -1351,12 +1381,13 @@ The proof and exhaustive implementation check are provided in the supplementary
 material.\else
 Equation~\eqref{eq:snapshot-guarantee} is treated as a prespecified validation
 target and not as an empirical claim in this draft.\fi
-The statement is causal because the ground set, costs, gains, and weights use
-only current or past information.  It applies to the fixed admitted cohort and
-locked coverage surrogate; it is not a competitive or dynamic-regret guarantee
-against a future-aware trace oracle.  Whole-base admission, switching costs,
-hysteresis, optional incidence removal, and perceptual quality remain empirical
-outer-policy choices.
+The statement is causal because the candidate pool, reduced set, costs, gains,
+and weights use only current or past information.  It applies only to the fixed
+admitted cohort, fixed reduced set, and locked coverage surrogate; it is neither
+a full-pool guarantee nor a competitive or dynamic-regret guarantee against a
+future-aware trace oracle.  Whole-base admission, switching costs, hysteresis,
+optional incidence removal, and perceptual quality remain empirical outer-policy
+choices.
 ```
 
 The release renderer must define `\newif\ifAllocatorGuaranteeValidated` and set it true only when the required `allocator_guarantee` gate passes and its evidence hash resolves to the exact proof/test artifact. Draft mode sets it false.
@@ -1369,11 +1400,13 @@ The release renderer must define `\newif\ifAllocatorGuaranteeValidated` and set 
 \label{alg:allocator}
 \begin{algorithmic}[1]
 \Require Ground set \(G_t\), modular costs \(c_{t,p}\), capacity \(b_t\), value oracle \(F_t\)
+\State \(C_t\gets\) the at-most-24 individually feasible packets with largest exact
+  \(F_t(\{p\})/c_{t,p}\), breaking ties by larger packet ID
 \State \(X^\star\gets\varnothing\)
-\ForAll{\(S\subseteq G_t\) with \(|S|\le3\) and \(\sum_{p\in S}c_{t,p}\le b_t\)}
+\ForAll{\(S\subseteq C_t\) with \(|S|\le3\) and \(\sum_{p\in S}c_{t,p}\le b_t\)}
   \State \(X\gets S\)
   \While{a feasible packet remains}
-    \State choose feasible \(p\in G_t\setminus X\) maximizing
+    \State choose feasible \(p\in C_t\setminus X\) maximizing
       \((F_t(X\cup\{p\})-F_t(X))/c_{t,p}\)
     \State \(X\gets X\cup\{p\}\)
   \EndWhile
@@ -1413,7 +1446,7 @@ without opening the final trace.
 
 - [ ] **Step 7: Write and mechanically bind the supplementary proof**
 
-`paper/supplement/theorem.tex` must enumerate the exact assumptions, prove normalization/monotonicity/submodularity of Eq.~\eqref{eq:coverage}, state the modular-cost prerequisite induced by bundling incidences, cite the standard knapsack-submodular result, and map each mathematical premise to a named test artifact. It must also include the squared-error counterexample showing why arbitrary reconstruction gain is not automatically submodular and a statement that optional incidence selection would create a fixed-charge cost.
+`paper/supplement/theorem.tex` must enumerate the exact assumptions, define the deterministic causal pre-screen and reduced set `C_t`, explicitly disclaim any approximation ratio against full `G_t`, prove normalization/monotonicity/submodularity of Eq.~\eqref{eq:coverage}, state the modular-cost prerequisite induced by bundling incidences, cite the standard knapsack-submodular result, and map each mathematical premise to a named test artifact. It must also include the squared-error counterexample showing why arbitrary reconstruction gain is not automatically submodular and a statement that optional incidence selection would create a fixed-charge cost.
 
 The paper-release renderer writes `generated/theorem_evidence.tex` containing only the validated proof artifact ID, exact-small-instance test count, minimum observed approximation ratio, and hashes. No proof statistic is typed into `method.tex` or `theorem.tex`.
 
@@ -1609,7 +1642,9 @@ difficult; the strongest claim therefore requires a controlled post-checkpoint
 cohort and an explicit contamination audit.  Deletion manages active online state
 and is not machine unlearning.  The capped engineering pilot budget can establish
 compatibility and cost, not the scientific result.  Finally, the snapshot theorem
-does not cover outer admission, switching, or future-aware trace regret.
+is only relative to the deterministically reduced candidate set; it does not
+cover full-pool pre-screen loss, outer admission, switching, or future-aware trace
+regret.
 ```
 
 ```tex

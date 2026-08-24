@@ -1095,10 +1095,11 @@ claims:
     constraint_metric: average_active_quality
     pass_rule: positive_paired_ci_lower_regret_and_quality_noninferiority
   allocator_guarantee:
-    primary_endpoint: certified_approximation_ratio
+    primary_endpoint: certified_reduced_set_approximation_ratio
     inference_unit: allocator_instance
-    required_controls: [brute_force_optimum]
-    pass_rule: proof_and_exhaustive_instance_certificate
+    required_controls: [exact_reduced_set_optimum]
+    ground_set_scope: causal_singleton_density_prescreen_C_t_max24
+    pass_rule: proof_and_exhaustive_reduced_set_instance_certificate
   optimization_free_tradeoff:
     primary_endpoint: identity
     inference_unit: concept
@@ -1162,6 +1163,18 @@ def test_training_identity_representation_cannot_be_sole_headline_evaluator(vali
     valid_draft.evaluators = [evaluator("training_identity_encoder", roles=["training_loss", "headline_identity"])]
     with pytest.raises(EvaluationLockError, match="independent headline identity evaluator"):
         freeze_evaluation_lock(valid_draft)
+
+
+@pytest.mark.parametrize("scope", [None, "full_G_t"])
+def test_allocator_guarantee_lock_requires_reduced_ground_set_scope(
+    valid_draft: EvaluationLockDraft, scope: str | None
+) -> None:
+    claim = valid_draft.claims["allocator_guarantee"]
+    valid_draft.claims["allocator_guarantee"] = claim.model_copy(
+        update={"ground_set_scope": scope}
+    )
+    with pytest.raises(EvaluationLockError, match="allocator guarantee ground-set scope"):
+        freeze_evaluation_lock(valid_draft)
 ```
 
 - [ ] **Step 3: Run the evaluation-lock tests and verify failure**
@@ -1174,6 +1187,18 @@ Expected: collection fails because `ratemem.evaluation.evaluation_lock` does not
 
 ```python
 from ratemem.evaluation.types import Sha256
+
+
+class ClaimLock(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    primary_endpoint: str
+    inference_unit: str
+    required_controls: list[str]
+    constraint_metric: str | None = None
+    pass_rule: str
+    ground_set_scope: Literal[
+        "causal_singleton_density_prescreen_C_t_max24"
+    ] | None = None
 
 
 class EvaluatorLock(BaseModel):
@@ -1231,7 +1256,17 @@ class EvaluationLock(BaseModel):
     approvals: list[Approval]
 ```
 
-`derive_budget_cells` uses decimal half-up rounding and stores the exact source byte-ledger hash. `freeze_evaluation_lock` verifies immutable 40-hex or content-addressed revisions, evaluator/preprocessing weight hashes, fixed prompt/noise pairing, hardware/warm-up/batch/resolution/sampler/steps, both request regimes, all three budgets, at least three training seeds, margin provenance excluded from model selection, the strongest-eligible-control selector, and Task 8's pre-lock source/fidelity/protocol/search-policy receipt. It rejects any learned shared-input materialization or validation search outcome at this stage and instead binds the required post-lock receipt types.
+`derive_budget_cells` uses decimal half-up rounding and stores the exact source byte-ledger hash.
+`freeze_evaluation_lock` verifies immutable 40-hex or content-addressed revisions,
+evaluator/preprocessing weight hashes, fixed prompt/noise pairing,
+hardware/warm-up/batch/resolution/sampler/steps, both request regimes, all three budgets, at least
+three training seeds, margin provenance excluded from model selection, the
+strongest-eligible-control selector, and Task 8's pre-lock source/fidelity/protocol/search-policy
+receipt. It additionally requires the `allocator_guarantee` claim to name
+`exact_reduced_set_optimum` and the exact non-null
+`ground_set_scope=causal_singleton_density_prescreen_C_t_max24`; a missing field or any full-`G_t`
+scope is rejected. It rejects any learned shared-input materialization or validation search outcome
+at this stage and instead binds the required post-lock receipt types.
 
 Add `require_scientific_training_lock(dataset_lock: Path, evaluation_lock: Path, requested_split: str) -> None` and call it from the scientific training entry point. It accepts only `train`, verifies both lock schemas/hashes, and rejects a launch if the evaluation lock is absent, unsigned, or newer inputs have invalidated it.
 
@@ -2818,6 +2853,23 @@ def test_empirical_allocator_gate_does_not_depend_on_theorem_status() -> None:
     assert evaluate_allocator_guarantee_gate(theorem).status == GateStatus.FAIL
 
 
+def test_allocator_guarantee_rejects_full_candidate_pool_scope() -> None:
+    reduced = allocator_guarantee_evidence(
+        certified=True,
+        comparator_source="exact_reduced_set_optimum",
+        ground_set_scope="causal_singleton_density_prescreen_C_t_max24",
+    )
+    assert evaluate_allocator_guarantee_gate(reduced).status == GateStatus.PASS
+    full_pool = allocator_guarantee_evidence(
+        certified=True,
+        comparator_source="exact_reduced_set_optimum",
+        ground_set_scope="full_G_t",
+    )
+    result = evaluate_allocator_guarantee_gate(full_pool)
+    assert result.status == GateStatus.FAIL
+    assert result.reason_code == "ALLOCATOR_GROUND_SET_SCOPE_MISMATCH"
+
+
 def test_empirical_allocator_gate_fails_only_on_empirical_conditions() -> None:
     evidence = allocator_evidence(utility_positive=True, regret_lower=True, quality_noninferior=False)
     result = evaluate_allocator_gate(evidence)
@@ -2874,7 +2926,16 @@ Implement these predicates exactly:
 2. `nonseparability`: at least one locked cohort has a packet with dependents from at least two distinct concepts, and the no-sharing paired quality-at-bytes frontier CI is positive rather than only saving metadata bytes.
 3. `shared_packet_representation`: against the strongest eligible progressive/shared-subspace/feature-cache control, request-weighted identity paired CI lower bound is positive at `50pct` for both `uniform` and `zipf`; prompt is non-inferior; `25pct` and `75pct` point estimates are non-negative.
 4. `causal_packet_allocator`: an independent empirical gate against the strongest eligible causal policy in the same cells; request-weighted utility and oracle-regret improvement CIs must be positive and active quality must be non-inferior. It never reads or conditions on `allocator_guarantee`.
-5. `allocator_guarantee`: the mechanically checked proof artifact matches the exact locked surrogate/assumptions, every exhaustive/random small instance is feasible, and achieved utility is at least `(1 - 1/e - numeric_tolerance) * optimum`; otherwise the theoretical claim is disabled.
+5. `allocator_guarantee`: evidence must declare
+   `ground_set_scope=causal_singleton_density_prescreen_C_t_max24` and compare only with the exact
+   optimum on that same reduced `C_t`. That scope removes individually infeasible bundles, sorts
+   the rest by descending exact singleton density, and retains the highest-density 24 with locked
+   packet-ID ties. The mechanically checked proof artifact must match the exact locked
+   binary-rational surrogate and assumptions; every exhaustive/random reduced-set instance must be
+   feasible; and exact utilities must pass the cross-multiplied rational lower bound
+   `6321205588285576 / 10**16`, strictly below `1 - 1/e`, with no additive epsilon. The gate confers
+   no ratio against full `G_t`; full-pool pre-screen loss remains empirical. Otherwise the
+   theoretical claim is disabled.
 6. `optimization_free_tradeoff`: identity and prompt are within frozen non-inferiority margins against matched-backbone `per_concept_lora` and the eligible `dreamcache_feature_cache` control, and the insertion-latency advantage CI exceeds the locked threshold.
 7. `autonomous_lookup`: AURC is lower than nearest-key and learned-novelty controls under equal active state.
 8. `scale`: the empirical nonseparability, shared-packet, and causal-allocator gates replicate with at least three independent training seeds on DreamBench++ and the controlled post-checkpoint set without consulting theorem status; multi-shot claims additionally require the locked eligible CustomConcept101 cohort. Any scaled theorem language is controlled separately by `allocator_guarantee`.
