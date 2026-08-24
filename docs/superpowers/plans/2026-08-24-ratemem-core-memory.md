@@ -1648,7 +1648,7 @@ uv run pytest -q
 uv run ruff check src tests
 uv run mypy src/ratemem
 uv run python -m ratemem.cli smoke-core
-if git grep -Iq -E '(ak|as)-[A-Za-z0-9_-]{20,}' -- .; then
+if git grep --untracked --exclude-standard -Iq -E '(ak|as)-[A-Za-z0-9_-]{20,}' -- .; then
   exit 1
 else
   ratemem_tracked_scan_status=$?

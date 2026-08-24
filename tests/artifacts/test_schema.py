@@ -4,12 +4,14 @@ import json
 import operator
 import subprocess
 import traceback
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, ClassVar
 
 import pytest
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError, field_serializer
 
 from ratemem.artifacts.schema import AttemptManifest
 
@@ -19,6 +21,165 @@ _SYNTHETIC_SUFFIX = "SYNTHETIC_TEST_VALUE_123456789"
 
 class _ManifestEnvelope(BaseModel):
     manifest: AttemptManifest
+
+
+class _OverridingStr(str):
+    calls: dict[str, int]
+
+    def __new__(
+        cls, payload: str, calls: dict[str, int]
+    ) -> _OverridingStr:
+        instance = str.__new__(cls, payload)
+        instance.calls = calls
+        return instance
+
+    @property
+    def __class__(self) -> type[str]:
+        self.calls["class"] += 1
+        return str
+
+    def __str__(self) -> str:
+        self.calls["str"] += 1
+        return "safe"
+
+    def __repr__(self) -> str:
+        self.calls["repr"] += 1
+        return "<overriding-str>"
+
+
+class _OverridingBytes(bytes):
+    calls: dict[str, int]
+
+    def __new__(
+        cls, payload: bytes, calls: dict[str, int]
+    ) -> _OverridingBytes:
+        instance = bytes.__new__(cls, payload)
+        instance.calls = calls
+        return instance
+
+    @property
+    def __class__(self) -> type[bytes]:
+        self.calls["class"] += 1
+        return bytes
+
+    def __bytes__(self) -> bytes:
+        self.calls["bytes"] += 1
+        return b"safe"
+
+    def __repr__(self) -> str:
+        self.calls["repr"] += 1
+        return "<overriding-bytes>"
+
+
+class _OverridingBytearray(bytearray):
+    calls: dict[str, int]
+
+    def __init__(self, payload: bytes, calls: dict[str, int]) -> None:
+        bytearray.__init__(self, payload)
+        self.calls = calls
+
+    @property
+    def __class__(self) -> type[bytearray]:
+        self.calls["class"] += 1
+        return bytearray
+
+    def __bytes__(self) -> bytes:
+        self.calls["bytes"] += 1
+        return b"safe"
+
+    def __repr__(self) -> str:
+        self.calls["repr"] += 1
+        return "<overriding-bytearray>"
+
+
+class _HidingDict(dict[str, object]):
+    calls: dict[str, int]
+
+    def __init__(
+        self, values: dict[str, object], calls: dict[str, int]
+    ) -> None:
+        dict.__init__(self, values)
+        self.calls = calls
+
+    @property
+    def __class__(self) -> type[dict[object, object]]:
+        self.calls["class"] += 1
+        return dict
+
+    def items(self):
+        self.calls["items"] += 1
+        return {}.items()
+
+    def __iter__(self) -> Iterator[str]:
+        self.calls["iter"] += 1
+        return iter(())
+
+    def __repr__(self) -> str:
+        self.calls["repr"] += 1
+        return "<hiding-dict>"
+
+
+class _RaisingMapping(Mapping[str, object]):
+    def __init__(self, calls: dict[str, int]) -> None:
+        self.calls = calls
+
+    @property
+    def __class__(self) -> type[dict[object, object]]:
+        self.calls["class"] += 1
+        return dict
+
+    def __getitem__(self, key: str) -> object:
+        self.calls["getitem"] += 1
+        raise RuntimeError("mapping getitem must not run")
+
+    def __iter__(self) -> Iterator[str]:
+        self.calls["iter"] += 1
+        raise RuntimeError("mapping iter must not run")
+
+    def __len__(self) -> int:
+        self.calls["len"] += 1
+        raise RuntimeError("mapping len must not run")
+
+    def items(self):
+        self.calls["items"] += 1
+        raise RuntimeError("mapping items must not run")
+
+    def __repr__(self) -> str:
+        self.calls["repr"] += 1
+        return "<raising-mapping>"
+
+
+class _SpoofedUnknown:
+    advertised_class: ClassVar[type[dict[object, object]]] = dict
+
+    def __init__(self, calls: dict[str, int]) -> None:
+        self.calls = calls
+
+    @property
+    def __class__(self) -> type[dict[object, object]]:
+        self.calls["class"] += 1
+        return self.advertised_class
+
+    def __iter__(self) -> Iterator[object]:
+        self.calls["iter"] += 1
+        raise RuntimeError("unknown iter must not run")
+
+    def __repr__(self) -> str:
+        self.calls["repr"] += 1
+        return "<spoofed-unknown>"
+
+
+class _DeepcopyTrap:
+    def __init__(self, calls: dict[str, int]) -> None:
+        self.calls = calls
+
+    def __deepcopy__(self, memo: dict[int, object]) -> object:
+        self.calls["deepcopy"] += 1
+        raise RuntimeError("deepcopy must not run")
+
+    def __repr__(self) -> str:
+        self.calls["repr"] += 1
+        return "<deepcopy-trap>"
 
 
 def _synthetic_credential(prefix: str = "ak-") -> str:
@@ -58,6 +219,25 @@ def _assert_not_leaked(error: BaseException, credential: str) -> None:
     assert all(credential not in surface for surface in _exception_surfaces(error))
 
 
+def _assert_markers_not_leaked(
+    error: BaseException, markers: tuple[str, ...]
+) -> None:
+    for marker in markers:
+        _assert_not_leaked(error, marker)
+
+
+def _assert_safe_value_error(
+    call: Callable[[], object],
+    markers: tuple[str, ...],
+    *,
+    match: str,
+) -> ValueError:
+    with pytest.raises(ValueError, match=match) as raised:
+        call()
+    _assert_markers_not_leaked(raised.value, markers)
+    return raised.value
+
+
 def _assert_credential_rejected(
     call: Callable[[], object], credential: str
 ) -> None:
@@ -76,6 +256,25 @@ def _assert_serialization_rejected(
         _assert_not_leaked(error, credential)
     else:
         raise AssertionError("credential-bearing instance was serialized")
+
+
+def _assert_safe_serialization_error(
+    call: Callable[[], object],
+    markers: tuple[str, ...],
+    *,
+    match: str,
+) -> BaseException:
+    try:
+        call()
+    except Exception as error:
+        assert match in str(error)
+        _assert_markers_not_leaked(error, markers)
+        return error
+    raise AssertionError("unsafe manifest serialization was accepted")
+
+
+def _fresh_calls(*names: str) -> dict[str, int]:
+    return dict.fromkeys(names, 0)
 
 
 def _forged_manifest(**updates: object) -> AttemptManifest:
@@ -170,6 +369,124 @@ def test_all_public_validation_entrypoints_redact_rejected_inputs(
     )
 
 
+@pytest.mark.parametrize("scalar_type", ["str", "bytes", "bytearray"])
+def test_overrideable_scalar_subclasses_are_rejected_without_dispatch(
+    scalar_type: str,
+) -> None:
+    credential = _synthetic_credential()
+    calls = _fresh_calls("class", "str", "bytes", "repr")
+    value: object
+    if scalar_type == "str":
+        value = _OverridingStr(credential, calls)
+    elif scalar_type == "bytes":
+        value = _OverridingBytes(credential.encode("ascii"), calls)
+    else:
+        value = _OverridingBytearray(credential.encode("ascii"), calls)
+    values = _valid_input()
+    values["notes"] = value
+
+    _assert_safe_value_error(
+        lambda: AttemptManifest.model_validate(values),
+        (credential,),
+        match="unsupported manifest input",
+    )
+    assert not any(calls.values())
+
+
+def test_hiding_dict_subclass_is_rejected_without_mapping_dispatch() -> None:
+    credential = _synthetic_credential("as-")
+    calls = _fresh_calls("class", "items", "iter", "repr")
+    values = _valid_input()
+    values["notes"] = credential
+    hidden = _HidingDict(values, calls)
+
+    _assert_safe_value_error(
+        lambda: AttemptManifest.model_validate(hidden),
+        (credential,),
+        match="unsupported manifest input",
+    )
+    assert not any(calls.values())
+
+
+def test_custom_mapping_is_rejected_without_protocol_calls() -> None:
+    calls = _fresh_calls("class", "getitem", "iter", "len", "items", "repr")
+    mapping = _RaisingMapping(calls)
+
+    _assert_safe_value_error(
+        lambda: AttemptManifest.model_validate(mapping),
+        ("mapping getitem must not run", "mapping iter must not run"),
+        match="unsupported manifest input",
+    )
+    assert not any(calls.values())
+
+
+@pytest.mark.parametrize("unsupported_type", ["deque", "path", "namespace", "unknown"])
+def test_unsupported_objects_are_rejected_without_repr_or_iteration(
+    unsupported_type: str,
+) -> None:
+    marker = "SYNTHETIC_UNSUPPORTED_VALUE_123456789"
+    calls = _fresh_calls("class", "iter", "repr")
+    if unsupported_type == "deque":
+        unsupported: object = deque([marker])
+    elif unsupported_type == "path":
+        unsupported = Path(marker)
+    elif unsupported_type == "namespace":
+        unsupported = SimpleNamespace(value=marker)
+    else:
+        unsupported = _SpoofedUnknown(calls)
+    values = _valid_input()
+    values["notes"] = unsupported
+
+    _assert_safe_value_error(
+        lambda: AttemptManifest.model_validate(values),
+        (marker,),
+        match="unsupported manifest input",
+    )
+    if unsupported_type == "unknown":
+        assert not any(calls.values())
+
+
+def test_nested_custom_mapping_is_rejected_before_handler_dispatch() -> None:
+    calls = _fresh_calls("class", "getitem", "iter", "len", "items", "repr")
+    values = _valid_input()
+    values["unexpected"] = [_RaisingMapping(calls)]
+
+    _assert_safe_value_error(
+        lambda: AttemptManifest.model_validate(values),
+        ("mapping items must not run",),
+        match="unsupported manifest input",
+    )
+    assert not any(calls.values())
+
+
+def test_handler_failures_are_replaced_without_original_context() -> None:
+    marker = "SYNTHETIC_HANDLER_FAILURE_123456789"
+    values = _valid_input()
+    values["status"] = marker
+
+    error = _assert_safe_value_error(
+        lambda: AttemptManifest.model_validate(values),
+        (marker,),
+        match="manifest validation failed",
+    )
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+def test_exact_container_cycles_terminate_before_sanitized_handler_error() -> None:
+    cycle: list[object] = []
+    cycle.append(cycle)
+    values = _valid_input()
+    values["unexpected"] = cycle
+
+    error = _assert_safe_value_error(
+        lambda: AttemptManifest.model_validate(values),
+        (),
+        match="manifest validation failed",
+    )
+    assert error.__context__ is None
+
+
 @pytest.mark.parametrize("location", ["value", "key"])
 def test_json_escaped_credentials_are_preflighted(location: str) -> None:
     credential = _synthetic_credential()
@@ -214,9 +531,61 @@ def test_public_json_boundary_preflights_malformed_raw_input(
     )
 
 
-def test_public_json_boundary_delegates_safe_malformed_input() -> None:
-    with pytest.raises(ValidationError, match="Invalid JSON"):
-        AttemptManifest.model_validate_json('{"notes":')
+@pytest.mark.parametrize("location", ["value", "key"])
+@pytest.mark.parametrize("payload_type", ["str", "bytes"])
+def test_public_json_boundary_sanitizes_malformed_unicode_escaped_shapes(
+    location: str, payload_type: str
+) -> None:
+    credential = _synthetic_credential()
+    escaped = "".join(f"\\u{ord(character):04x}" for character in credential)
+    if location == "value":
+        raw = '{"notes":"' + escaped
+    else:
+        raw = '{"' + escaped + '":'
+    payload: str | bytes = raw if payload_type == "str" else raw.encode("ascii")
+
+    error = _assert_safe_value_error(
+        lambda: AttemptManifest.model_validate_json(payload),
+        (credential, escaped, escaped.replace("\\", "\\\\")),
+        match="credential-shaped",
+    )
+    assert error.__context__ is None
+
+
+def test_public_json_boundary_sanitizes_safe_parser_failures() -> None:
+    marker = "SYNTHETIC_MALFORMED_JSON_123456789"
+    raw = '{"notes":"' + marker
+
+    error = _assert_safe_value_error(
+        lambda: AttemptManifest.model_validate_json(raw),
+        (marker,),
+        match="Invalid JSON",
+    )
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+@pytest.mark.parametrize("payload_type", ["str", "bytes", "bytearray"])
+def test_public_json_boundary_rejects_raw_scalar_subclasses(
+    payload_type: str,
+) -> None:
+    credential = _synthetic_credential("as-")
+    raw = '{"notes":"' + credential
+    calls = _fresh_calls("class", "str", "bytes", "repr")
+    payload: object
+    if payload_type == "str":
+        payload = _OverridingStr(raw, calls)
+    elif payload_type == "bytes":
+        payload = _OverridingBytes(raw.encode("ascii"), calls)
+    else:
+        payload = _OverridingBytearray(raw.encode("ascii"), calls)
+
+    _assert_safe_value_error(
+        lambda: AttemptManifest.model_validate_json(payload),  # type: ignore[arg-type]
+        (credential,),
+        match="unsupported manifest input",
+    )
+    assert not any(calls.values())
 
 
 @pytest.mark.parametrize(
@@ -274,6 +643,47 @@ def test_type_adapter_and_nested_validation_share_the_safe_preflight() -> None:
     )
     for call in calls:
         _assert_credential_rejected(call, credential)
+
+
+def test_valid_inputs_work_across_all_supported_schema_paths() -> None:
+    values = _valid_input()
+    serialized = json.dumps(values)
+    manifest = AttemptManifest.model_validate(values)
+    expected = AttemptManifest(**values)
+
+    assert manifest == expected
+    assert AttemptManifest.model_validate(manifest) == expected
+    assert AttemptManifest.model_validate_json(
+        serialized,
+        strict=True,
+        context={"safe": True},
+        by_name=True,
+    ) == expected
+    assert AttemptManifest.model_validate_json(serialized.encode("utf-8")) == expected
+    assert AttemptManifest.model_validate_json(bytearray(serialized, "utf-8")) == expected
+    assert TypeAdapter(AttemptManifest).validate_python(values) == expected
+    assert TypeAdapter(AttemptManifest).validate_json(serialized) == expected
+    assert _ManifestEnvelope.model_validate({"manifest": values}).manifest == expected
+    assert _ManifestEnvelope.model_validate_json(
+        json.dumps({"manifest": values})
+    ).manifest == expected
+
+
+def test_root_rejects_non_manifest_containers_without_scanning_protocols() -> None:
+    credential = _synthetic_credential()
+    unsupported_roots: tuple[object, ...] = (
+        [credential],
+        (credential,),
+        {credential},
+        memoryview(credential.encode("ascii")),
+    )
+
+    for value in unsupported_roots:
+        _assert_safe_value_error(
+            lambda value=value: AttemptManifest.model_validate(value),
+            (credential,),
+            match="unsupported manifest input",
+        )
 
 
 def test_manifest_forbids_extra_fields() -> None:
@@ -356,6 +766,32 @@ def test_model_copy_preserves_standard_fields_set_semantics() -> None:
     }
 
 
+def test_model_copy_rejects_custom_updates_without_mapping_dispatch() -> None:
+    manifest = AttemptManifest.model_validate(_valid_input())
+    calls = _fresh_calls("class", "getitem", "iter", "len", "items", "repr")
+    update = _RaisingMapping(calls)
+
+    _assert_safe_value_error(
+        lambda: manifest.model_copy(update=update),
+        ("mapping getitem must not run", "mapping iter must not run"),
+        match="unsupported manifest input",
+    )
+    assert not any(calls.values())
+
+
+def test_model_copy_preflights_forged_fields_before_deepcopy() -> None:
+    marker = "SYNTHETIC_DEEPCOPY_VALUE_123456789"
+    calls = _fresh_calls("deepcopy", "repr")
+    forged = _forged_manifest(notes=_DeepcopyTrap(calls))
+
+    _assert_safe_value_error(
+        lambda: forged.model_copy(deep=True),
+        (marker, "deepcopy must not run"),
+        match="unsupported manifest input",
+    )
+    assert not any(calls.values())
+
+
 def test_model_construct_is_disabled_without_echoing_arguments() -> None:
     credential = _synthetic_credential()
     values = _valid_input()
@@ -394,6 +830,108 @@ def test_outbound_serializers_reject_forged_credentials(location: str) -> None:
     )
     for call in calls:
         _assert_serialization_rejected(call, credential)
+
+
+def test_manifest_subclass_cannot_inject_a_field_serializer() -> None:
+    credential = _synthetic_credential("as-")
+    try:
+
+        class InjectingManifest(AttemptManifest):
+            @field_serializer("notes")
+            def inject_notes(self, value: str) -> str:
+                return credential
+
+    except TypeError as error:
+        assert "does not support subclasses" in str(error)
+        _assert_not_leaked(error, credential)
+    else:
+        manifest = InjectingManifest.model_validate(_valid_input())
+        _assert_serialization_rejected(manifest.model_dump, credential)
+
+
+def test_serializer_scans_transformed_handler_output() -> None:
+    credential = _synthetic_credential()
+    manifest = AttemptManifest.model_validate(_valid_input())
+
+    _assert_serialization_rejected(
+        lambda: manifest.serialize_with_credential_guard(
+            lambda value: {"notes": [credential]}
+        ),
+        credential,
+    )
+
+
+def test_serializer_rejects_custom_handler_output_without_protocol_dispatch() -> None:
+    manifest = AttemptManifest.model_validate(_valid_input())
+    calls = _fresh_calls("class", "getitem", "iter", "len", "items", "repr")
+
+    _assert_safe_serialization_error(
+        lambda: manifest.serialize_with_credential_guard(
+            lambda value: _RaisingMapping(calls)
+        ),
+        ("mapping items must not run", "mapping iter must not run"),
+        match="unsupported manifest input",
+    )
+    assert not any(calls.values())
+
+
+def test_serializer_handler_failures_drop_original_context() -> None:
+    marker = "SYNTHETIC_SERIALIZER_FAILURE_123456789"
+    manifest = AttemptManifest.model_validate(_valid_input())
+
+    def fail_handler(value: object) -> object:
+        raise RuntimeError(marker)
+
+    error = _assert_safe_serialization_error(
+        lambda: manifest.serialize_with_credential_guard(fail_handler),
+        (marker,),
+        match="manifest serialization failed",
+    )
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+@pytest.mark.parametrize("unsupported_type", ["deque", "path"])
+def test_forged_unsupported_fields_are_rejected_before_fallback(
+    unsupported_type: str,
+) -> None:
+    credential = _synthetic_credential("as-")
+    unsupported: object
+    if unsupported_type == "deque":
+        unsupported = deque([credential])
+    else:
+        unsupported = Path(credential)
+    forged = _forged_manifest(notes=unsupported)
+    adapter = TypeAdapter(AttemptManifest)
+    envelope = BaseModel.model_construct.__func__(
+        _ManifestEnvelope,
+        _fields_set={"manifest"},
+        manifest=forged,
+    )
+    envelope_adapter = TypeAdapter(_ManifestEnvelope)
+    fallback_calls: list[object] = []
+
+    def fallback(value: object) -> str:
+        fallback_calls.append(value)
+        return "fallback"
+
+    calls: tuple[Callable[[], object], ...] = (
+        lambda: forged.model_dump(fallback=fallback),
+        lambda: forged.model_dump_json(fallback=fallback),
+        lambda: adapter.dump_python(forged, fallback=fallback),
+        lambda: adapter.dump_json(forged, fallback=fallback),
+        lambda: envelope.model_dump(fallback=fallback),
+        lambda: envelope.model_dump_json(fallback=fallback),
+        lambda: envelope_adapter.dump_python(envelope, fallback=fallback),
+        lambda: envelope_adapter.dump_json(envelope, fallback=fallback),
+    )
+    for call in calls:
+        _assert_safe_serialization_error(
+            call,
+            (credential,),
+            match="unsupported manifest input",
+        )
+    assert fallback_calls == []
 
 
 def test_minimally_forged_instance_is_rejected_before_internal_access() -> None:
@@ -442,7 +980,7 @@ def test_task8_plan_scans_tracked_and_generated_outputs() -> None:
         / "docs/superpowers/plans/2026-08-24-ratemem-core-memory.md"
     ).read_text(encoding="utf-8")
 
-    assert "git grep -Iq -E" in plan
+    assert "git grep --untracked --exclude-standard -Iq -E" in plan
     assert "rg --hidden --no-ignore -q" in plan
     for root in ("artifacts", "run_log", "logs", "exports"):
         assert root in plan

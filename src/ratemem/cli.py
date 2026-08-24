@@ -18,9 +18,8 @@ from ratemem.state.store import PacketStore
 
 def smoke_core() -> dict[str, int | str]:
     budget = 8192
-    encoded = ProgressiveCodec(group_size=4).encode(
-        "concept-a", np.linspace(-1.0, 1.0, 16, dtype=np.float32)
-    )
+    source = np.linspace(-1.0, 1.0, 16, dtype=np.float32)
+    encoded = ProgressiveCodec(group_size=4).encode("concept-a", source)
     store = PacketStore.empty(budget).create(
         "concept-a", encoded.base_payload, created_at=0
     )
@@ -43,9 +42,24 @@ def smoke_core() -> dict[str, int | str]:
             "snapshot allocator rejected the only feasible useful packet"
         )
 
-    decoded = encoded.decode(packet_count=1)
-    if decoded.shape != encoded.shape or not np.all(np.isfinite(decoded)):
+    selected = encoded.decode(packet_count=1)
+    if selected.shape != encoded.shape or not np.all(np.isfinite(selected)):
         raise RuntimeError("decoded selected prefix is nonfinite or misshaped")
+    base = encoded.decode(packet_count=0)
+    if base.shape != encoded.shape or not np.all(np.isfinite(base)):
+        raise RuntimeError("decoded base prefix is nonfinite or misshaped")
+    base_error = float(
+        np.mean(np.square(source.astype(np.float64) - base.astype(np.float64)))
+    )
+    selected_error = float(
+        np.mean(
+            np.square(source.astype(np.float64) - selected.astype(np.float64))
+        )
+    )
+    if not selected_error < base_error:
+        raise RuntimeError(
+            "selected prefix did not strictly improve reconstruction error"
+        )
 
     lifecycle = replay(
         (

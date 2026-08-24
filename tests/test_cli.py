@@ -77,6 +77,19 @@ def test_smoke_rejects_a_nonfinite_or_misshaped_selected_prefix(
         cli.smoke_core()
 
 
+def test_smoke_requires_strict_selected_prefix_improvement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        EncodedCode,
+        "decode",
+        lambda self, packet_count: np.zeros(self.shape, dtype=np.float32),
+    )
+
+    with pytest.raises(RuntimeError, match="strictly improve reconstruction"):
+        cli.smoke_core()
+
+
 def test_smoke_runs_the_lifecycle_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     def fail_replay(*args: object, **kwargs: object) -> Any:
         raise RuntimeError("lifecycle-probe-marker")
