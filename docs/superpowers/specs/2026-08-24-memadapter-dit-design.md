@@ -347,6 +347,9 @@ The first capped pilot may establish only:
 - reduction of flow loss on a tiny held-in run; and
 - reproduction of a fixed LoRA or explicit dense update in a toy contract test.
 
+The core-memory contract is frozen by `docs/contracts/core-interface.md`; later plans may extend
+schemas only through versioned fields and backward-compatible decoders.
+
 Tiny held-out images are exploratory. This pilot cannot establish CVPR-level personalization, memory-policy superiority, 5--50-concept lifecycle results, GMM benefit, composition, or downstream augmentation.
 
 ### 10.2 Scientific evidence gates
