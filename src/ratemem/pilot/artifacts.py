@@ -150,6 +150,7 @@ def validate_attempt(payload: dict[str, Any]) -> None:
     ended = _timestamp(payload["ended_at"], "ended_at")
     if ended < started:
         raise ValueError("ended_at must not precede started_at")
+    status = payload["status"]
     cost = cast(dict[str, object], payload["cost"])
     known = _usd(cost["known_usage_before_usd"], "known_usage_before_usd")
     pending = _usd(cost["pending_worst_case_usd"], "pending_worst_case_usd")
@@ -157,16 +158,20 @@ def validate_attempt(payload: dict[str, Any]) -> None:
     estimated = _usd(cost["estimated_cost_usd"], "estimated_cost_usd")
     if known + pending > Decimal("27.00"):
         raise ValueError("known usage plus pending worst case exceeds internal USD 27 bound")
-    if estimated > phase or phase > pending:
-        raise ValueError("estimated cost must not exceed phase or pending worst-case bounds")
+    if phase > pending:
+        raise ValueError("phase cost must not exceed the admitted pending worst-case bound")
+    if estimated > phase and status not in {"oom", "exception"}:
+        raise ValueError(
+            "only an incomplete attempt may report an estimate above its phase bound"
+        )
     reconciliation = cost["reconciliation_status"]
     reconciled_value = cost["reconciled_cost_usd"]
     if reconciliation == "pending" and reconciled_value is not None:
         raise ValueError("pending reconciliation must have null reconciled cost")
     if reconciliation == "reconciled":
         reconciled = _usd(reconciled_value, "reconciled_cost_usd")
-        if reconciled > phase or known + reconciled > Decimal("28.00"):
-            raise ValueError("reconciled cost exceeds the phase or workspace bound")
+        if known + reconciled > Decimal("28.00"):
+            raise ValueError("reconciled cost exceeds the hard workspace bound")
 
     probes = cast(dict[str, object], payload["probes"])
     results = cast(dict[str, object], probes["results"])
@@ -208,7 +213,6 @@ def validate_attempt(payload: dict[str, Any]) -> None:
         and cast(float, final_loss) < cast(float, initial_loss)
     ):
         raise ValueError("a failed held-in loss probe cannot report a loss decrease")
-    status = payload["status"]
     if (status == "succeeded") != (payload["error"] is None):
         raise ValueError("only a succeeded attempt may have a null error")
     if status == "succeeded" and any(result != "pass" for result in statuses):

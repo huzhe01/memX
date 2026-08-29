@@ -234,6 +234,36 @@ def test_early_failure_is_honest_about_not_run_metrics_and_missing_checkpoint() 
         validate_attempt(no_failed_probe)
 
 
+@pytest.mark.parametrize("status", ["oom", "exception"])
+def test_incomplete_attempt_may_truthfully_record_estimate_above_admission_bound(
+    status: str,
+) -> None:
+    payload = early_failure_attempt(status)
+    payload["cost"]["estimated_cost_usd"] = "9.51"  # type: ignore[index]
+    validate_attempt(payload)
+
+    completed = valid_attempt()
+    completed["cost"]["estimated_cost_usd"] = "9.51"  # type: ignore[index]
+    with pytest.raises(ValueError, match="estimated|phase"):
+        validate_attempt(completed)
+
+    probe_failed = valid_attempt()
+    probe_failed["status"] = "probe_failed"
+    probe_failed["error"] = {"type": "ProbeFailure", "message": "loss did not fall"}
+    probe_failed["probes"]["results"]["held_in_loss"]["status"] = "fail"  # type: ignore[index]
+    probe_failed["probes"]["final_flow_loss"] = 1.1  # type: ignore[index]
+    probe_failed["cost"]["estimated_cost_usd"] = "9.51"  # type: ignore[index]
+    with pytest.raises(ValueError, match="estimated|phase"):
+        validate_attempt(probe_failed)
+
+
+def test_modal_task_identity_must_be_present() -> None:
+    payload = valid_attempt()
+    payload["modal"]["task_id"] = None  # type: ignore[index]
+    with pytest.raises(ValueError, match="task_id|null|string"):
+        validate_attempt(payload)
+
+
 def test_held_in_probe_status_is_bound_to_measured_loss_direction() -> None:
     false_success = valid_attempt()
     false_success["probes"]["final_flow_loss"] = 1.1  # type: ignore[index]
@@ -492,7 +522,7 @@ def test_constructor_open_failure_leaves_only_an_empty_failed_root(
     assert list(root.iterdir()) == []
 
 
-@pytest.mark.parametrize("amount", ["9.51", "28.01", "NaN", "1.2"])
+@pytest.mark.parametrize("amount", ["28.01", "NaN", "1.2"])
 def test_finalize_reconciled_decimal_and_bounds_fail_closed(
     tmp_path: Path, amount: str
 ) -> None:
@@ -501,6 +531,16 @@ def test_finalize_reconciled_decimal_and_bounds_fail_closed(
     with pytest.raises((TypeError, ValueError)):
         writer.finalize(reconciled_cost_usd=amount)
     assert not (writer.root / "attempt.json").exists()
+
+
+def test_finalize_records_realized_cost_above_phase_but_below_workspace_cap(
+    tmp_path: Path,
+) -> None:
+    writer, _source = _writer(tmp_path)
+    writer.write_pending()
+    final_path = writer.finalize(reconciled_cost_usd="9.51")
+    final = json.loads(final_path.read_text())
+    assert final["cost"]["reconciled_cost_usd"] == "9.51"
 
 
 def test_pending_publication_failure_rolls_back_transaction_markers(
