@@ -1985,12 +1985,29 @@ git commit -m "feat: serialize trainable sana adapter state"
 
 ### Task 9: Define and enforce the pilot attempt artifact schema
 
+> **Implementation reconciliation (complete):** The executable Task 9 contract
+> is intentionally stricter than the initial sketch below.  Draft 2020-12
+> validation admits only the nine engineering probes and cross-validates probe
+> status, launch identity, source identity, checkpoint identity, and success or
+> failure semantics.  The writer binds an externally retained checkpoint
+> identity, publishes the exact six-file attempt bundle through descriptor-
+> relative create-only writes, and re-verifies payloads, checksums, checkpoint
+> bytes, inodes, and the owner-only root across pending and final publication.
+> Pending evidence is immutable and reconciliation creates a distinct final
+> record.  Atomic publication keeps the staging descriptor open through final
+> verification, fails closed on concurrent rewrites, and removes a disputed
+> target.  Construction validates and copies all inputs before creating the
+> root, then binds the root path view to its opened `(st_dev, st_ino)` without
+> path-based cleanup; replacement races are rejected without deleting either
+> directory.  The writer has explicit/context-manager/finalizer FD lifecycle
+> semantics and rejects every operation after close.
+
 **Files:**
 - Create: `schemas/ratemem-pilot-attempt-v1.schema.json`
 - Create: `src/ratemem/pilot/artifacts.py`
 - Create: `tests/unit/test_pilot_artifacts.py`
 
-- [ ] **Step 1: Write tests for scope constants, unknown fields, atomic checksums, and reconciliation**
+- [x] **Step 1: Write tests for scope constants, unknown fields, atomic checksums, and reconciliation**
 
 ```python
 # tests/unit/test_pilot_artifacts.py
@@ -2068,13 +2085,13 @@ def test_launch_identity_cross_fields_reject_tampering() -> None:
         validate_attempt(payload)
 ```
 
-- [ ] **Step 2: Run the artifact tests and observe the missing module/schema**
+- [x] **Step 2: Run the artifact tests and observe the missing module/schema**
 
 Run: `uv run pytest tests/unit/test_pilot_artifacts.py -q`
 
 Expected: collection fails because `ratemem.pilot.artifacts` does not exist.
 
-- [ ] **Step 3: Add the complete Draft 2020-12 artifact schema**
+- [x] **Step 3: Add the complete Draft 2020-12 artifact schema**
 
 ```json
 {
@@ -2213,7 +2230,7 @@ Expected: collection fails because `ratemem.pilot.artifacts` does not exist.
 }
 ```
 
-- [ ] **Step 4: Implement canonical, atomic artifact writing and validation**
+- [x] **Step 4: Implement canonical, atomic artifact writing and validation**
 
 ```python
 # src/ratemem/pilot/artifacts.py (core contract)
@@ -2302,14 +2319,14 @@ class ArtifactWriter:
 
 The real runner writes `config.json`, `rates.json`, `dataset-manifest.json`, `execution-receipts.jsonl`, `metrics.jsonl`, and `trainable.safetensors` before `write_pending()`. `execution-receipts.jsonl` is copied from the separately committed append-only runtime receipt, and its count populates the lower-bound field. Each runtime receipt and the artifact's `modal` object carry the launch attempt ID, workspace, source hash, pilot-slot hash, and submission-receipt hash received from the locally consumed request. `validate_attempt()` cross-checks the launch attempt against top-level `attempt_id` and the launch source against the exact clean HEAD commit. `attempt.pending.json` remains immutable evidence; reconciliation creates `attempt.json` rather than modifying the pending file.
 
-- [ ] **Step 5: Run the artifact tests**
+- [x] **Step 5: Run the artifact tests**
 
 Run: `uv run pytest tests/unit/test_pilot_artifacts.py -q`
 
 Expected: `3 passed`; an unknown scientific metric and either launch-identity mismatch are rejected,
 and finalization records a non-null reconciled cost.
 
-- [ ] **Step 6: Commit the artifact contract**
+- [x] **Step 6: Commit the artifact contract**
 
 ```bash
 git add schemas/ratemem-pilot-attempt-v1.schema.json src/ratemem/pilot/artifacts.py tests/unit/test_pilot_artifacts.py

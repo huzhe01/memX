@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratemem.local/schemas/ratemem-pilot-attempt-v1.schema.json",
+  "title": "RateMem engineering pilot attempt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "scope", "publication_eligible", "attempt_id", "phase", "status", "started_at", "ended_at", "source", "software", "model", "dataset", "runtime", "modal", "cost", "probes", "checkpoint", "files", "error"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "scope": {"const": "engineering_pilot_only"},
+    "publication_eligible": {"const": false},
+    "attempt_id": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "phase": {"const": "first_pilot"},
+    "status": {"enum": ["succeeded", "probe_failed", "oom", "exception"]},
+    "started_at": {"type": "string", "format": "date-time"},
+    "ended_at": {"type": "string", "format": "date-time"},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["git_commit", "git_diff_sha256", "config_sha256"],
+      "properties": {
+        "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "git_diff_sha256": {"$ref": "#/$defs/sha256"},
+        "config_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "software": {
+      "type": "object", "additionalProperties": false,
+      "required": ["python", "torch", "diffusers", "peft", "transformers", "modal", "container_image_id"],
+      "properties": {
+        "python": {"type": "string", "minLength": 1},
+        "torch": {"const": "2.13.0"}, "diffusers": {"const": "0.40.0"},
+        "peft": {"const": "0.20.0"}, "transformers": {"const": "5.16.1"},
+        "modal": {"const": "1.5.4"}, "container_image_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "model": {
+      "type": "object", "additionalProperties": false,
+      "required": ["model_id", "revision", "support_model_id", "support_revision"],
+      "properties": {
+        "model_id": {"const": "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers"},
+        "revision": {"const": "b77948f2b4eed5c728e9b828ccff07f7427b43cc"},
+        "support_model_id": {"const": "facebook/dinov2-small"},
+        "support_revision": {"const": "ed25f3a31f01632728cabb09d1542f84ab7b0056"}
+      }
+    },
+    "dataset": {
+      "type": "object", "additionalProperties": false,
+      "required": ["dataset_id", "revision", "manifest_sha256", "row_indices", "held_in"],
+      "properties": {
+        "dataset_id": {"const": "Yuanshi/Subjects200K"},
+        "revision": {"const": "0d1cf6536239888f1a8e218790649344810067bc"},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "row_indices": {"const": [0, 1, 2, 3, 4, 5, 6, 7]},
+        "held_in": {"const": true}
+      }
+    },
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["seed", "requested_gpu", "observed_gpu", "gpu_count", "cpu_cores", "memory_gib", "timeout_seconds", "peak_allocated_bytes", "peak_reserved_bytes"],
+      "properties": {
+        "seed": {"type": "integer"}, "requested_gpu": {"const": "L40S"},
+        "observed_gpu": {"type": "string", "pattern": "L40S"}, "gpu_count": {"const": 1},
+        "cpu_cores": {"const": 4}, "memory_gib": {"const": 32}, "timeout_seconds": {"const": 7200},
+        "peak_allocated_bytes": {"type": "integer", "minimum": 0},
+        "peak_reserved_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "modal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["profile", "workspace", "environment", "launch_attempt_id", "launch_source_sha256", "pilot_slot_sha256", "submission_receipt_sha256", "function_call_id", "input_id", "task_id", "execution_receipt_count", "execution_receipt_semantics", "retries", "detached"],
+      "properties": {
+        "profile": {"const": "ratemem-pilot"}, "workspace": {"type": "string", "minLength": 1},
+        "environment": {"const": "main"},
+        "launch_attempt_id": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+        "launch_source_sha256": {"$ref": "#/$defs/sha256"},
+        "pilot_slot_sha256": {"$ref": "#/$defs/sha256"},
+        "submission_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "function_call_id": {"type": "string", "minLength": 1},
+        "input_id": {"type": "string", "minLength": 1},
+        "task_id": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "execution_receipt_count": {"type": "integer", "minimum": 1},
+        "execution_receipt_semantics": {"const": "lower_bound_may_miss_precommit_reschedule"},
+        "retries": {"const": 0}, "detached": {"const": false}
+      }
+    },
+    "cost": {
+      "type": "object", "additionalProperties": false,
+      "required": ["workspace_budget_usd", "internal_limit_usd", "known_usage_before_usd", "pending_worst_case_usd", "phase_bound_usd", "estimated_cost_usd", "reconciliation_status", "reconciled_cost_usd", "rates_sha256"],
+      "properties": {
+        "workspace_budget_usd": {"const": "28.00"}, "internal_limit_usd": {"const": "27.00"},
+        "known_usage_before_usd": {"$ref": "#/$defs/usd"}, "pending_worst_case_usd": {"$ref": "#/$defs/usd"},
+        "phase_bound_usd": {"$ref": "#/$defs/usd"}, "estimated_cost_usd": {"$ref": "#/$defs/usd"},
+        "reconciliation_status": {"enum": ["pending", "reconciled"]},
+        "reconciled_cost_usd": {"oneOf": [{"$ref": "#/$defs/usd"}, {"type": "null"}]},
+        "rates_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "probes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["allowed_probe_names", "results", "warmup_steps", "measured_steps", "p50_step_seconds", "p95_step_seconds", "held_in_step_cap", "initial_flow_loss", "final_flow_loss", "transformer_passes_per_step"],
+      "properties": {
+        "allowed_probe_names": {"const": ["checkpoint_compatibility", "dynamic_numerics", "gradient_flow", "frozen_backbone", "peak_memory", "one_step_inference", "one_timestep_backward", "step_timing", "held_in_loss"]},
+        "results": {
+          "type": "object", "additionalProperties": false,
+          "required": ["checkpoint_compatibility", "dynamic_numerics", "gradient_flow", "frozen_backbone", "peak_memory", "one_step_inference", "one_timestep_backward", "step_timing", "held_in_loss"],
+          "properties": {
+            "checkpoint_compatibility": {"$ref": "#/$defs/probe_result"},
+            "dynamic_numerics": {"$ref": "#/$defs/probe_result"},
+            "gradient_flow": {"$ref": "#/$defs/probe_result"},
+            "frozen_backbone": {"$ref": "#/$defs/probe_result"},
+            "peak_memory": {"$ref": "#/$defs/probe_result"},
+            "one_step_inference": {"$ref": "#/$defs/probe_result"},
+            "one_timestep_backward": {"$ref": "#/$defs/probe_result"},
+            "step_timing": {"$ref": "#/$defs/probe_result"},
+            "held_in_loss": {"$ref": "#/$defs/probe_result"}
+          }
+        },
+        "warmup_steps": {"const": 10}, "measured_steps": {"const": 20},
+        "p50_step_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "p95_step_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "held_in_step_cap": {"type": "integer", "minimum": 0},
+        "initial_flow_loss": {"type": "number", "minimum": 0},
+        "final_flow_loss": {"type": "number", "minimum": 0},
+        "transformer_passes_per_step": {"const": 1}
+      }
+    },
+    "checkpoint": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "bytes"],
+      "properties": {
+        "path": {"const": "trainable.safetensors"}, "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "files": {
+      "type": "object", "additionalProperties": false,
+      "required": ["checksums_sha256"],
+      "properties": {"checksums_sha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "error": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "additionalProperties": false, "required": ["type", "message"],
+         "properties": {"type": {"type": "string", "minLength": 1}, "message": {"type": "string"}}}
+      ]
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "usd": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.[0-9]{2,6}$"},
+    "probe_name": {"enum": ["checkpoint_compatibility", "dynamic_numerics", "gradient_flow", "frozen_backbone", "peak_memory", "one_step_inference", "one_timestep_backward", "step_timing", "held_in_loss"]},
+    "probe_result": {
+      "type": "object", "additionalProperties": false, "required": ["status"],
+      "properties": {"status": {"enum": ["pass", "fail"]}}
+    }
+  }
+}
