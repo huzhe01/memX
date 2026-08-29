@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0.0",
+  "sana": {
+    "model_id": "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers",
+    "revision": "b77948f2b4eed5c728e9b828ccff07f7427b43cc",
+    "resolution": 1024,
+    "latent_channels": 32,
+    "latent_size": 32,
+    "text_feature_dim": 2304,
+    "max_sequence_length": 300,
+    "dtype": "bfloat16"
+  },
+  "support_encoder": {
+    "model_id": "facebook/dinov2-small",
+    "revision": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
+    "feature_dim": 384
+  },
+  "adapter": {
+    "layout_version": "sana-qkv-v1",
+    "num_blocks": 20,
+    "attention_kinds": [
+      "attn1",
+      "attn2"
+    ],
+    "target_modules": [
+      "to_q",
+      "to_k",
+      "to_v"
+    ],
+    "width": 2240,
+    "rank": 4,
+    "atom_count": 4,
+    "projection_count": 120,
+    "code_dim": 480,
+    "atom_tensor_count": 240,
+    "atom_parameter_count": 8601600
+  },
+  "training": {
+    "scheduler_class": "FlowMatchEulerDiscreteScheduler",
+    "num_train_timesteps": 1000,
+    "flow_shift": 1.0,
+    "use_dynamic_shifting": false,
+    "timestep_sampling": "uniform",
+    "prediction_target": "noise_minus_clean_latent",
+    "mixed_precision": "bf16",
+    "gradient_checkpointing": true,
+    "max_support_images": 2,
+    "query_passes_per_step": 1
+  }
+}

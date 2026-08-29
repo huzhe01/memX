@@ -27,7 +27,7 @@ Lock these identities in committed configuration and pass the full revisions to 
 | Modal resources | one `L40S` requested per execution, 4 physical CPU cores, 32 GiB requested RAM, `retries=0` for user-code failures, `max_containers=1` concurrent container |
 | Cost policy | workspace usage budget exactly USD 28.00; internal metered-usage ceiling USD 27.00; first pilot USD 21.00 = USD 2.00 setup/cache/inference/backward + USD 3.00 timing + USD 16.00 held-in pilot; remaining USD 6.00 is an unallocated safety buffer and authorizes no rerun |
 
-The model revision is a content commit, not the moving `main` branch. `FlowMatchEulerDiscreteScheduler` is loaded from the pinned scheduler subfolder for training, matching the official SANA DreamBooth flow objective; the inference pipeline retains the checkpoint scheduler. The public SANA and DINO checkpoints require no Hugging Face credential.
+The model revision is a content commit, not the moving `main` branch. Training constructs `FlowMatchEulerDiscreteScheduler` directly from the immutable 1000-step, shift-1 contract; only inference retains the pinned checkpoint DPM scheduler. The public SANA and DINO checkpoints require no Hugging Face credential.
 
 The launch contract is exactly one synchronous `.remote()` submission. Modal may still reschedule a container after an infrastructure crash or preemption even with `retries=0`; therefore neither `max_containers=1` nor the USD 27 client ledger proves a single physical execution or hard-caps realized spend. The USD 27 rule is conservative admission accounting. The verified USD 28 Workspace usage budget is the hard outer stop, every available runtime execution receipt is preserved as a lower bound on container attempts, and actual pre-credit metered usage is reconciled before any later launch.
 
@@ -649,433 +649,232 @@ git commit -m "fix: close sana adapter transaction gaps"
 - Create: `tests/unit/test_pilot_config.py`
 - Create: `tests/unit/test_sana_components.py`
 - Create: `tests/integration/test_real_sana_checkpoint.py`
+- Modify: `docs/superpowers/plans/2026-08-24-ratemem-sana-modal-pilot.md` (Task 7 scheduler handoff)
 
-- [ ] **Step 1: Write config tests that reject moving or structurally incompatible pins**
+- [x] **Step 1: RED — specify an exact immutable pilot config**
 
-```python
-# tests/unit/test_pilot_config.py
-import json
-from pathlib import Path
+Pin schema `1.0.0`, SANA
+`Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers@b77948f2b4eed5c728e9b828ccff07f7427b43cc`,
+and DINOv2
+`facebook/dinov2-small@ed25f3a31f01632728cabb09d1542f84ab7b0056`.
+The training object additionally pins
+`FlowMatchEulerDiscreteScheduler`, `num_train_timesteps=1000`,
+`flow_shift=1.0`, and `use_dynamic_shifting=false`.
 
-import pytest
+The RED suite must reject duplicate JSON keys, NaN and both infinities, non-object
+root/nested values, reordered keys, every changed leaf, and Python equal-value
+type substitutions such as `20.0`, `1`, and `0` for canonical integer,
+float, and boolean leaves. It must also reject coordinated plausible drift such
+as 10 blocks with 8 atoms or width 1120 with rank 8 even when derived totals are
+preserved.
 
-from ratemem.pilot.config import SanaPilotConfig
-from ratemem.adapters.sana_layout import (
-    ATTENTION_KINDS,
-    SANA_LAYOUT_VERSION,
-    TARGET_MODULES,
-)
+- [x] **Step 2: GREEN — implement one canonical config boundary**
 
-CONFIG_PATH = Path("configs/pilot/sana-1.5-1.6b.json")
+`SanaPilotConfig.load()` reads UTF-8 and uses
+`object_pairs_hook` plus `parse_constant`. The frozen, slotted dataclass
+revalidates in `__post_init__`; its public `validate()` reconstructs the
+canonical payload with exact built-in types, values, and order. Both direct
+construction and `dataclasses.replace()` therefore remain fail-closed, and
+hydration/loading revalidate an exact `SanaPilotConfig` before I/O.
 
+Derived values are fixed at:
 
-def test_committed_sana_config_has_full_pins_and_expected_layout() -> None:
-    config = SanaPilotConfig.load(CONFIG_PATH)
-    assert config.model_id == "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers"
-    assert config.revision == "b77948f2b4eed5c728e9b828ccff07f7427b43cc"
-    assert config.support_revision == "ed25f3a31f01632728cabb09d1542f84ab7b0056"
-    assert config.layout_version == SANA_LAYOUT_VERSION
-    assert config.attention_kinds == ATTENTION_KINDS
-    assert config.target_modules == TARGET_MODULES
-    assert config.code_shape == (20, 2, 3, 4)
-    assert config.code_dim == 480
-    assert config.atom_parameter_count == 8_601_600
-
-
-def test_moving_revision_is_rejected(tmp_path: Path) -> None:
-    payload = json.loads(CONFIG_PATH.read_text())
-    payload["sana"]["revision"] = "main"
-    path = tmp_path / "moving.json"
-    path.write_text(json.dumps(payload))
-    with pytest.raises(ValueError, match="40-character lowercase commit"):
-        SanaPilotConfig.load(path)
+```text
+code_shape             = (20, 2, 3, 4)
+projection_count       = 120
+code_dim                = 480
+atom_tensor_count       = 240
+atom_parameter_count    = 8,601,600
 ```
 
-- [ ] **Step 2: Run the config test and observe the missing config model**
-
-Run: `uv run pytest tests/unit/test_pilot_config.py -q`
-
-Expected: collection fails because `ratemem.pilot.config` does not exist.
-
-- [ ] **Step 3: Commit the immutable model/layout configuration**
-
-```json
-{
-  "schema_version": "1.0.0",
-  "sana": {
-    "model_id": "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers",
-    "revision": "b77948f2b4eed5c728e9b828ccff07f7427b43cc",
-    "resolution": 1024,
-    "latent_channels": 32,
-    "latent_size": 32,
-    "text_feature_dim": 2304,
-    "max_sequence_length": 300,
-    "dtype": "bfloat16"
-  },
-  "support_encoder": {
-    "model_id": "facebook/dinov2-small",
-    "revision": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
-    "feature_dim": 384
-  },
-  "adapter": {
-    "layout_version": "sana-qkv-v1",
-    "num_blocks": 20,
-    "attention_kinds": ["attn1", "attn2"],
-    "target_modules": ["to_q", "to_k", "to_v"],
-    "width": 2240,
-    "rank": 4,
-    "atom_count": 4,
-    "projection_count": 120,
-    "code_dim": 480,
-    "atom_parameter_count": 8601600
-  },
-  "training": {
-    "num_train_timesteps": 1000,
-    "timestep_sampling": "uniform",
-    "prediction_target": "noise_minus_clean_latent",
-    "mixed_precision": "bf16",
-    "gradient_checkpointing": true,
-    "max_support_images": 2,
-    "query_passes_per_step": 1
-  }
-}
-```
-
-- [ ] **Step 4: Implement exact-key parsing and derived-layout checks**
-
-```python
-# src/ratemem/pilot/config.py (SANA portion)
-from __future__ import annotations
-
-import json
-import re
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
-
-from ratemem.adapters.sana_layout import (
-    ATTENTION_KINDS,
-    SANA_LAYOUT_VERSION,
-    TARGET_MODULES,
-    SanaAdapterLayout,
-)
-
-COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-
-
-def _exact_keys(value: dict[str, Any], expected: set[str], context: str) -> None:
-    if set(value) != expected:
-        raise ValueError(f"{context} keys must be exactly {sorted(expected)}")
-
-
-@dataclass(frozen=True)
-class SanaPilotConfig:
-    model_id: str
-    revision: str
-    resolution: int
-    latent_channels: int
-    latent_size: int
-    text_feature_dim: int
-    max_sequence_length: int
-    support_model_id: str
-    support_revision: str
-    support_feature_dim: int
-    layout_version: str
-    num_blocks: int
-    attention_kinds: tuple[str, ...]
-    target_modules: tuple[str, ...]
-    width: int
-    rank: int
-    atom_count: int
-    projection_count: int
-    code_dim: int
-    atom_parameter_count: int
-
-    @property
-    def code_shape(self) -> tuple[int, int, int, int]:
-        return (self.num_blocks, len(self.attention_kinds), len(self.target_modules), self.atom_count)
-
-    @classmethod
-    def load(cls, path: Path) -> "SanaPilotConfig":
-        payload = json.loads(path.read_text())
-        _exact_keys(payload, {"schema_version", "sana", "support_encoder", "adapter", "training"}, "root")
-        sana = payload["sana"]
-        support = payload["support_encoder"]
-        adapter = payload["adapter"]
-        training = payload["training"]
-        _exact_keys(
-            sana,
-            {"model_id", "revision", "resolution", "latent_channels", "latent_size", "text_feature_dim", "max_sequence_length", "dtype"},
-            "sana",
-        )
-        _exact_keys(support, {"model_id", "revision", "feature_dim"}, "support_encoder")
-        _exact_keys(
-            adapter,
-            {"layout_version", "num_blocks", "attention_kinds", "target_modules", "width", "rank", "atom_count", "projection_count", "code_dim", "atom_parameter_count"},
-            "adapter",
-        )
-        _exact_keys(
-            training,
-            {"num_train_timesteps", "timestep_sampling", "prediction_target", "mixed_precision", "gradient_checkpointing", "max_support_images", "query_passes_per_step"},
-            "training",
-        )
-        if not COMMIT_PATTERN.fullmatch(sana["revision"]):
-            raise ValueError("SANA revision must be a 40-character lowercase commit")
-        if not COMMIT_PATTERN.fullmatch(support["revision"]):
-            raise ValueError("support revision must be a 40-character lowercase commit")
-        expected_training = {
-            "num_train_timesteps": 1000,
-            "timestep_sampling": "uniform",
-            "prediction_target": "noise_minus_clean_latent",
-            "mixed_precision": "bf16",
-            "gradient_checkpointing": True,
-            "max_support_images": 2,
-            "query_passes_per_step": 1,
-        }
-        if sana["dtype"] != "bfloat16" or training != expected_training:
-            raise ValueError("SANA dtype or one-timestep training contract changed")
-        config = cls(
-            model_id=sana["model_id"], revision=sana["revision"], resolution=sana["resolution"],
-            latent_channels=sana["latent_channels"], latent_size=sana["latent_size"],
-            text_feature_dim=sana["text_feature_dim"], max_sequence_length=sana["max_sequence_length"],
-            support_model_id=support["model_id"], support_revision=support["revision"],
-            support_feature_dim=support["feature_dim"], layout_version=adapter["layout_version"],
-            num_blocks=adapter["num_blocks"],
-            attention_kinds=tuple(adapter["attention_kinds"]), target_modules=tuple(adapter["target_modules"]),
-            width=adapter["width"], rank=adapter["rank"], atom_count=adapter["atom_count"],
-            projection_count=adapter["projection_count"], code_dim=adapter["code_dim"],
-            atom_parameter_count=adapter["atom_parameter_count"],
-        )
-        if (
-            config.layout_version != SANA_LAYOUT_VERSION
-            or config.attention_kinds != ATTENTION_KINDS
-            or config.target_modules != TARGET_MODULES
-        ):
-            raise ValueError("adapter layout version/order does not match the runtime contract")
-        layout = SanaAdapterLayout(config.num_blocks, config.atom_count)
-        expected_projections = layout.projection_count
-        expected_code_dim = layout.code_dim
-        expected_atom_parameters = layout.trainable_parameter_count(
-            width=config.width, rank=config.rank
-        )
-        if (config.projection_count, config.code_dim, config.atom_parameter_count) != (
-            expected_projections, expected_code_dim, expected_atom_parameters
-        ):
-            raise ValueError("derived adapter dimensions do not match committed values")
-        return config
-```
-
-Keep parsing functions for the dataset and Modal configs in this module when their tasks add those dataclasses; do not create alternate config loaders.
-
-- [ ] **Step 5: Run the config tests**
-
-Run: `uv run pytest tests/unit/test_pilot_config.py -q`
-
-Expected: `2 passed`.
-
-- [ ] **Step 6: Write a no-network safe-loading contract for every Hub read**
-
-This unit layer performs no network access: every `from_pretrained` boundary is patched before `load_pinned_components()` is called. It proves full commit revisions, `use_safetensors=True` for every weight-bearing loader, explicit `trust_remote_code=False` for Transformers auto loaders, and the absence of any Diffusers `custom_pipeline`/dynamic pipeline path.
-
-```python
-# tests/unit/test_sana_components.py
-from pathlib import Path
-from unittest.mock import Mock, patch
-
-import torch
-
-from ratemem.pilot.config import SanaPilotConfig
-from ratemem.sana.components import load_pinned_components
-
-
-@patch("ratemem.sana.components.Dinov2Model.from_pretrained")
-@patch("ratemem.sana.components.AutoImageProcessor.from_pretrained")
-@patch("ratemem.sana.components.Gemma2Model.from_pretrained")
-@patch("ratemem.sana.components.AutoTokenizer.from_pretrained")
-@patch("ratemem.sana.components.AutoencoderDC.from_pretrained")
-@patch("ratemem.sana.components.SanaTransformer2DModel.from_pretrained")
-@patch("ratemem.sana.components.FlowMatchEulerDiscreteScheduler.from_pretrained")
-@patch("ratemem.sana.components.DPMSolverMultistepScheduler.from_pretrained")
-def test_all_hub_loads_are_revision_pinned_and_safe(
-    inference_scheduler: Mock,
-    training_scheduler: Mock,
-    transformer: Mock,
-    vae: Mock,
-    tokenizer: Mock,
-    text_encoder: Mock,
-    support_processor: Mock,
-    support_encoder: Mock,
-) -> None:
-    config = SanaPilotConfig.load(Path("configs/pilot/sana-1.5-1.6b.json"))
-    sana_loaders = (
-        inference_scheduler, training_scheduler, transformer, vae, tokenizer, text_encoder,
-    )
-    support_loaders = (support_processor, support_encoder)
-    for mock in (*sana_loaders, *support_loaders):
-        mock.return_value = Mock()
-    load_pinned_components(config, cache_dir=Path("/cache/huggingface"), device=torch.device("cpu"))
-    for mock in sana_loaders:
-        assert mock.call_args.kwargs["revision"] == config.revision
-    for mock in support_loaders:
-        assert mock.call_args.kwargs["revision"] == config.support_revision
-    for mock in (transformer, vae, text_encoder, support_encoder):
-        assert mock.call_args.kwargs["use_safetensors"] is True
-    for mock in (tokenizer, text_encoder, support_processor, support_encoder):
-        assert mock.call_args.kwargs["trust_remote_code"] is False
-    for mock in (*sana_loaders, *support_loaders):
-        assert mock.call_args.kwargs.get("trust_remote_code") is not True
-    source = Path("src/ratemem/sana/components.py").read_text(encoding="utf-8")
-    assert "custom_pipeline" not in source
-    assert "DiffusionPipeline" not in source
-```
-
-- [ ] **Step 7: Implement the frozen component bundle**
-
-```python
-# src/ratemem/sana/components.py
-from __future__ import annotations
-
-from dataclasses import dataclass
-from pathlib import Path
-
-import torch
-from diffusers import (
-    AutoencoderDC,
-    DPMSolverMultistepScheduler,
-    FlowMatchEulerDiscreteScheduler,
-    SanaPipeline,
-    SanaTransformer2DModel,
-)
-from torch import nn
-from transformers import AutoImageProcessor, AutoTokenizer, Dinov2Model, Gemma2Model
-
-from ratemem.pilot.config import SanaPilotConfig
-
-
-@dataclass(frozen=True)
-class PinnedComponents:
-    transformer: SanaTransformer2DModel
-    vae: AutoencoderDC
-    tokenizer: object
-    text_encoder: Gemma2Model
-    training_scheduler: FlowMatchEulerDiscreteScheduler
-    inference_scheduler: DPMSolverMultistepScheduler
-    support_processor: object
-    support_encoder: Dinov2Model
-
-    def inference_pipeline(self) -> SanaPipeline:
-        return SanaPipeline(
-            tokenizer=self.tokenizer,
-            text_encoder=self.text_encoder,
-            vae=self.vae,
-            transformer=self.transformer,
-            scheduler=self.inference_scheduler,
-        )
-
-
-def _freeze(module: nn.Module) -> nn.Module:
-    module.requires_grad_(False)
-    module.eval()
-    return module
-
-
-def load_pinned_components(
-    config: SanaPilotConfig, *, cache_dir: Path, device: torch.device
-) -> PinnedComponents:
-    common = {"revision": config.revision, "cache_dir": cache_dir}
-    training_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-        config.model_id, subfolder="scheduler", **common
-    )
-    inference_scheduler = DPMSolverMultistepScheduler.from_pretrained(
-        config.model_id, subfolder="scheduler", **common
-    )
-    transformer = SanaTransformer2DModel.from_pretrained(
-        config.model_id, subfolder="transformer", dtype=torch.bfloat16,
-        use_safetensors=True, **common
-    )
-    vae = AutoencoderDC.from_pretrained(
-        config.model_id, subfolder="vae", dtype=torch.float32,
-        use_safetensors=True, **common
-    )
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.model_id, subfolder="tokenizer", trust_remote_code=False, **common
-    )
-    text_encoder = Gemma2Model.from_pretrained(
-        config.model_id, subfolder="text_encoder", dtype=torch.bfloat16,
-        use_safetensors=True, trust_remote_code=False, **common
-    )
-    support_processor = AutoImageProcessor.from_pretrained(
-        config.support_model_id, revision=config.support_revision, cache_dir=cache_dir,
-        trust_remote_code=False
-    )
-    support_encoder = Dinov2Model.from_pretrained(
-        config.support_model_id, revision=config.support_revision, cache_dir=cache_dir,
-        use_safetensors=True, trust_remote_code=False
-    )
-    _freeze(transformer).to(device=device, dtype=torch.bfloat16)
-    _freeze(vae).to(device=device, dtype=torch.float32)
-    _freeze(text_encoder).to(device=device, dtype=torch.bfloat16)
-    _freeze(support_encoder).to(device=device, dtype=torch.float32)
-    return PinnedComponents(
-        transformer=transformer,
-        vae=vae,
-        tokenizer=tokenizer,
-        text_encoder=text_encoder,
-        training_scheduler=training_scheduler,
-        inference_scheduler=inference_scheduler,
-        support_processor=support_processor,
-        support_encoder=support_encoder,
-    )
-
-
-def assert_frozen(modules: dict[str, nn.Module]) -> None:
-    trainable = [f"{module_name}.{name}" for module_name, module in modules.items() for name, parameter in module.named_parameters() if parameter.requires_grad]
-    if trainable:
-        raise RuntimeError(f"frozen modules expose trainable parameters: {trainable[:5]}")
-```
-
-- [ ] **Step 8: Add the opt-in real-checkpoint integration test**
-
-```python
-# tests/integration/test_real_sana_checkpoint.py
-import os
-from pathlib import Path
-
-import pytest
-import torch
-
-from ratemem.adapters.sana_layout import install_sana_dynamic_atoms
-from ratemem.pilot.config import SanaPilotConfig
-from ratemem.sana.components import assert_frozen, load_pinned_components
-
-
-@pytest.mark.real_sana
-@pytest.mark.paid_modal
-@pytest.mark.skipif(os.getenv("RATEMEM_RUN_REAL_SANA") != "1", reason="enabled only by the paid pilot")
-def test_real_checkpoint_structure_and_frozen_state() -> None:
-    config = SanaPilotConfig.load(Path("configs/pilot/sana-1.5-1.6b.json"))
-    components = load_pinned_components(config, cache_dir=Path("/cache/huggingface"), device=torch.device("cuda"))
-    assert components.transformer.config.num_layers == 20
-    assert components.transformer.config.num_attention_heads * components.transformer.config.attention_head_dim == 2240
-    bank = install_sana_dynamic_atoms(
-        components.transformer, rank=config.rank, atom_count=config.atom_count, expected_blocks=config.num_blocks
-    )
-    assert len(bank.wrappers) == 120
-    assert sum(parameter.numel() for parameter in bank.parameters() if parameter.requires_grad) == 8_601_600
-    assert_frozen({"vae": components.vae, "text_encoder": components.text_encoder, "support_encoder": components.support_encoder})
-```
-
-- [ ] **Step 9: Run loader/config tests locally**
-
-Run: `uv run pytest tests/unit/test_pilot_config.py tests/unit/test_sana_components.py tests/integration/test_real_sana_checkpoint.py -q`
-
-Expected: unit tests pass and the real-checkpoint test reports `1 skipped`; no model file is downloaded locally.
-
-- [ ] **Step 10: Commit the pinned component boundary**
+RED evidence: collection initially failed because `ratemem.pilot.config` did
+not exist. GREEN command:
 
 ```bash
-git add configs/pilot/sana-1.5-1.6b.json src/ratemem/pilot/config.py src/ratemem/sana/components.py tests/unit/test_pilot_config.py tests/unit/test_sana_components.py tests/integration/test_real_sana_checkpoint.py
-git commit -m "feat: pin sana and support checkpoints"
+uv run pytest tests/unit/test_pilot_config.py -q
+```
+
+- [x] **Step 3: RED — specify a two-phase, allowlisted Hub boundary**
+
+The exact required file tuples are:
+
+```python
+SANA_FILES = (
+    "scheduler/scheduler_config.json",
+    "text_encoder/config.json",
+    "text_encoder/model.safetensors.index.json",
+    "text_encoder/model-00001-of-00002.safetensors",
+    "text_encoder/model-00002-of-00002.safetensors",
+    "tokenizer/tokenizer_config.json",
+    "tokenizer/tokenizer.json",
+    "transformer/config.json",
+    "transformer/diffusion_pytorch_model.safetensors",
+    "vae/config.json",
+    "vae/diffusion_pytorch_model.safetensors",
+)
+DINO_FILES = (
+    "config.json",
+    "preprocessor_config.json",
+    "model.safetensors",
+)
+```
+
+There are no wildcards, Python files, pickle weights, or moving revisions.
+For Transformers 5.16.1, the explicit `GemmaTokenizer` consumes
+`tokenizer.json`; the upstream `tokenizer.model` and
+`special_tokens_map.json` are optional and deliberately excluded. Root model
+metadata and DINO `pytorch_model.bin` are also unnecessary and excluded.
+
+Nine behavior-control files additionally have committed SHA-256 manifests:
+
+| Snapshot file | SHA-256 |
+|---|---|
+| `scheduler/scheduler_config.json` | `f9256042828841b26561487c7e0c33fff8717e98ac0fef5c1f6d05bfdd66e908` |
+| `transformer/config.json` | `70863bf60b87cbeab5780c9827ffc5b880cd1ec9ce22bf033409b7e257e8fc68` |
+| `vae/config.json` | `ba6f3d3e44d75d44fdd3760097c069173b5b925e6d14604d5d3582628d09cca6` |
+| `text_encoder/config.json` | `733f241a6692770dfba10383e2c5a56a4f88b320732d9ee8fa16118737eca84d` |
+| `text_encoder/model.safetensors.index.json` | `92764588f700e36874c52f9f05bba143857e5069fc69b14450f907a1cdf879ed` |
+| `tokenizer/tokenizer_config.json` | `cb32b7929c62608d46572e813112b3ad8a841fb98fdd6a4da8559e368a951c89` |
+| `tokenizer/tokenizer.json` | `5f7eee611703c5ce5d1eee32d9cdcfe465647b8aff0c1dfb3bed7ad7dbb05060` |
+| DINO `config.json` | `1809f83e3bdb1609a501a610ad4a742f4fd8ae44d72ca4aa0df52d1f2ac8628d` |
+| DINO `preprocessor_config.json` | `14e780d86fa1861f8751f868d7f45425b5feb55c38ca26f152ca5097ab30f828` |
+
+Hydration verifies each repository's control hashes before the next download;
+offline loading repeats every hash before the first loader and after the final
+loader. This protects the
+model/tokenizer/processor behavior and the sharded text weight map even when a
+local directory has the expected SHA basename. Large safetensors remain under
+the fixed public Hub revision, Hugging Face cache-integrity, and safetensors
+loader trust boundary rather than being rehashed by this application. The
+private HF cache trust model excludes concurrent malicious writers; the second
+control-file pass narrows accidental or non-malicious time-of-check/time-of-use
+drift but is not a filesystem isolation primitive.
+
+`hydrate_pinned_snapshots()` is the sole network-enabled function. It makes
+exactly two `snapshot_download` calls with `repo_type="model"`, the full
+revision, exact allowlist, `token=False`, `local_files_only=False`, and
+`force_download=False`. It validates and strict-resolves the SANA result
+before making the DINO request, verifies the resolved basename is the full SHA,
+and checks every required file. A missing/wrong SANA result therefore causes
+only one network call; a SHA-named symlink to another revision is rejected.
+
+- [x] **Step 4: GREEN — implement explicit offline component loading**
+
+`load_pinned_components()` accepts only an exact, revalidated config and exact
+`PinnedSnapshotPaths`. It strict-resolves and fully validates both snapshots
+before the first loader. Every loader receives a local snapshot path,
+`local_files_only=True`, `token=False`, and `force_download=False`.
+
+Only these concrete classes may load:
+
+- `DPMSolverMultistepScheduler`
+- `SanaTransformer2DModel`
+- `AutoencoderDC`
+- `GemmaTokenizer`
+- `Gemma2Model`
+- `BitImageProcessor`
+- `Dinov2Model`
+
+All weight-bearing calls use `use_safetensors=True`; Transformers model calls
+also use `weights_only=True` and `trust_remote_code=False`. The tokenizer
+uses `trust_remote_code=False`; `BitImageProcessor` does not receive that
+unsupported kwarg. SANA transformer/text load as BF16, while VAE/DINO load as
+FP32. No Auto class, `DiffusionPipeline`, pipeline `from_pretrained`,
+`custom_pipeline`, `hf_hub_download`, requests/httpx/urllib fallback, or
+dynamic remote code is allowed.
+
+The normalized semantic surface excludes only provenance/version metadata.
+Transformer validation covers every Diffusers 0.40 constructor field that can
+change its forward pass, including the fixed raw fields plus the new
+`guidance_embeds_scale=0.1` and `timestep_scale=1.0` defaults. VAE validation
+covers its complete fixed block/channel/layer/qkv/up/down/norm/activation
+architecture plus the 0.40 shortcut and convolution-activation defaults. The
+inference DPM config covers all fixed solver/beta/threshold/final/spacing/
+variance/offset/rescale flags and the 0.40 dynamic/time-shift defaults.
+Gemma, tokenizer, DINO, and Bit processor core fields are also validated with
+exact runtime types. This includes Gemma special-token IDs and left padding,
+plus Bit processor RGB/resize/crop, ImageNet mean/std, `resample=3`, and the
+Transformers 5.16.1 normalized `SizeDict`/tuple forms. The control-file hashes
+close semantic fields not duplicated as normalized assertions.
+
+- [x] **Step 5: Pin the training FlowMatch constructor and immutable arrays**
+
+Training never hydrates a scheduler config and never calls `set_timesteps`.
+Construct it directly:
+
+```python
+training_scheduler = FlowMatchEulerDiscreteScheduler(
+    num_train_timesteps=1000,
+    shift=1.0,
+    use_dynamic_shifting=False,
+)
+```
+
+Canonical immutable arrays use the scheduler's fixed float32 construction:
+
+```python
+sigmas = torch.linspace(1, 1000, 1000, dtype=torch.float32).flip(0) / 1000
+timesteps = sigmas * 1000
+training_timesteps = tuple(float(value) for value in timesteps)
+training_sigmas = tuple(float(value) for value in sigmas)
+```
+
+The scheduler tensors must remain one-dimensional float32 CPU tensors and both
+tensor values and saved tuples must equal these arrays at every index. This
+detects synchronized mid-array mutation rather than checking endpoints only.
+Task 7 receives these immutable tuples and copies them to the training device
+without regenerating scheduler state.
+
+- [x] **Step 6: Build and validate the frozen bundle**
+
+`PinnedComponents` has exact concrete field types. Construction validates
+every pinned component/config, freezes all four modules, recursively sets eval,
+and checks one shared device with transformer/text BF16 and VAE/DINO FP32.
+`inference_pipeline()` directly constructs exactly one `SanaPipeline` from
+the five already-loaded objects and verifies every object identity.
+
+Unit tests patch every loader and the socket/network boundary. They prove all
+kwargs, exact returned-class rejection, config/snapshot revalidation before
+network or loaders, missing-file failure before any loader, exact config leaf
+and equal-type tamper rejection, immutable scheduler arrays, and the AST
+prohibitions above. Free/local unit verification performs **no network** access;
+hydration is the sole separately invoked explicit network boundary.
+
+- [x] **Step 7: Add the explicit paid real-checkpoint test**
+
+The `real_sana + paid_modal + cuda` integration test is locally skipped unless
+`RATEMEM_RUN_REAL_SANA=1` and CUDA are both present. Only after that guard does
+it hydrate the two fixed revisions, then load solely from the validated local
+paths. It repeats the complete pinned semantic surface, class, scheduler,
+placement, dtype, frozen/eval, processor, and tokenizer checks; validates the production
+20-block SANA layout; installs 120 wrappers and 240 unique BF16 CUDA atom
+tensors; verifies exactly 8,601,600 trainables and Bank/trainable ID equality;
+and checks exact `SanaPipeline` object identity. Normal local verification
+must not opt in and must not download a checkpoint.
+
+- [x] **Step 8: Run Task 4 and free verification**
+
+```bash
+uv run pytest tests/unit/test_pilot_config.py tests/unit/test_sana_components.py \
+  tests/integration/test_real_sana_checkpoint.py -q
+uv run pytest -m "not cuda and not real_sana and not paid_modal" -q
+uv run ruff check src tests
+uv run mypy src
+```
+
+Expected: config/component tests pass, the paid real test reports one skip, all
+free tests and static checks pass, and no local model download or Modal call
+occurs.
+
+- [x] **Step 9: Commit the pinned offline boundary**
+
+```bash
+git add configs/pilot/sana-1.5-1.6b.json \
+  src/ratemem/pilot/config.py src/ratemem/sana/components.py \
+  tests/unit/test_pilot_config.py tests/unit/test_sana_components.py \
+  tests/integration/test_real_sana_checkpoint.py \
+  docs/superpowers/plans/2026-08-24-ratemem-sana-modal-pilot.md
+git commit -m "feat: pin and load sana components offline"
 ```
 
 ### Task 5: Build the frozen support feature path and permutation-invariant amortizer
@@ -1687,17 +1486,17 @@ def test_flow_endpoints_and_target() -> None:
 
 
 def test_sigma_lookup_preserves_batch_order() -> None:
-    schedule_timesteps = torch.tensor([999.0, 500.0, 0.0])
-    schedule_sigmas = torch.tensor([1.0, 0.5, 0.0, 0.0])
-    selected = torch.tensor([0.0, 999.0])
+    schedule_timesteps = torch.tensor([1000.0, 500.0, 1.0])
+    schedule_sigmas = torch.tensor([1.0, 0.5, 0.001])
+    selected = torch.tensor([1.0, 1000.0])
     sigma = sigma_for_timesteps(selected, schedule_timesteps, schedule_sigmas, n_dim=4)
-    torch.testing.assert_close(sigma[:, 0, 0, 0], torch.tensor([0.0, 1.0]))
+    torch.testing.assert_close(sigma[:, 0, 0, 0], torch.tensor([0.001, 1.0]))
 ```
 
 ```python
 # tests/contract/test_flow_gradient_contract.py
 import torch
-from diffusers import FlowMatchEulerDiscreteScheduler, SanaTransformer2DModel
+from diffusers import SanaTransformer2DModel
 
 from ratemem.adapters.sana_layout import install_sana_dynamic_atoms
 from ratemem.sana.flow import FlowBatch, OneTimestepFlowTrainer
@@ -1721,14 +1520,23 @@ def test_train_step_uses_one_transformer_pass_and_preserves_backbone() -> None:
         support_dim=6, description_dim=8, hidden_dim=16,
         projection_count=6, atom_count=4, layers=1, heads=4,
     )
-    scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=10)
+    training_sigmas_tensor = torch.linspace(1, 10, 10, dtype=torch.float32).flip(0) / 10
+    training_timesteps = tuple(float(value) for value in training_sigmas_tensor * 10)
+    training_sigmas = tuple(float(value) for value in training_sigmas_tensor)
     trainable = [
         parameter
         for parameter in (*bank.parameters(), *amortizer.parameters())
         if parameter.requires_grad
     ]
     optimizer = torch.optim.AdamW(trainable, lr=1e-3, weight_decay=0.0)
-    trainer = OneTimestepFlowTrainer(transformer, bank, amortizer, scheduler, optimizer)
+    trainer = OneTimestepFlowTrainer(
+        transformer,
+        bank,
+        amortizer,
+        training_timesteps,
+        training_sigmas,
+        optimizer,
+    )
     batch = FlowBatch(
         clean_latents=torch.randn(2, 4, 4, 4),
         prompt_embeddings=torch.randn(2, 3, 8),
@@ -1768,7 +1576,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-from diffusers import FlowMatchEulerDiscreteScheduler
 from torch import Tensor, nn
 
 from ratemem.adapters.sana_layout import SanaDynamicAdapterBank
@@ -1838,14 +1645,23 @@ class OneTimestepFlowTrainer:
         transformer: nn.Module,
         adapter_bank: SanaDynamicAdapterBank,
         amortizer: SupportAmortizer,
-        scheduler: FlowMatchEulerDiscreteScheduler,
+        training_timesteps: tuple[float, ...],
+        training_sigmas: tuple[float, ...],
         optimizer: torch.optim.Optimizer,
         autocast_dtype: torch.dtype | None = None,
     ) -> None:
         self.transformer = transformer
         self.adapter_bank = adapter_bank
         self.amortizer = amortizer
-        self.scheduler = scheduler
+        if (
+            type(training_timesteps) is not tuple
+            or type(training_sigmas) is not tuple
+            or not training_timesteps
+            or len(training_timesteps) != len(training_sigmas)
+        ):
+            raise ValueError("training schedule arrays must be non-empty aligned tuples")
+        self.training_timesteps = training_timesteps
+        self.training_sigmas = training_sigmas
         self.optimizer = optimizer
         self.autocast_dtype = autocast_dtype
         self.frozen_parameters = tuple(parameter for parameter in transformer.parameters() if not parameter.requires_grad)
@@ -1858,18 +1674,20 @@ class OneTimestepFlowTrainer:
         )
         clean = batch.clean_latents
         noise = torch.randn(clean.shape, generator=generator, device=clean.device, dtype=clean.dtype)
-        self.scheduler.set_timesteps(self.scheduler.config.num_train_timesteps, device=clean.device)
+        schedule_timesteps = torch.tensor(
+            self.training_timesteps, device=clean.device, dtype=torch.float32
+        )
+        schedule_sigmas = torch.tensor(
+            self.training_sigmas, device=clean.device, dtype=clean.dtype
+        )
         indices = torch.randint(
-            0, self.scheduler.config.num_train_timesteps, (clean.shape[0],),
+            0, len(self.training_timesteps), (clean.shape[0],),
             generator=generator, device=clean.device,
         )
-        timesteps = self.scheduler.timesteps[indices]
-        sigma = sigma_for_timesteps(
-            timesteps,
-            self.scheduler.timesteps.to(clean.device),
-            self.scheduler.sigmas.to(device=clean.device, dtype=clean.dtype),
-            n_dim=clean.ndim,
-        )
+        timesteps = schedule_timesteps[indices]
+        sigma = schedule_sigmas[indices].flatten()
+        while sigma.ndim < clean.ndim:
+            sigma = sigma.unsqueeze(-1)
         noisy = flow_interpolate(clean, noise, sigma)
         flat_coefficients = prediction.coefficients.reshape(clean.shape[0], -1)
         # Backward remains inside the activation context so gradient-checkpoint recomputation sees the code.
@@ -1897,7 +1715,14 @@ class OneTimestepFlowTrainer:
         )
 ```
 
-The CPU contract uses the default `autocast_dtype=None`; `RealSanaPilotBackend` passes `torch.bfloat16`. Keep autocast scoped only to the SANA transformer call, keep amortizer logits/scales and loss accumulation FP32, and enable `transformer.enable_gradient_checkpointing()` before constructing the trainer. Never move `loss.backward()` outside `adapter_bank.activate(...)`.
+The trainer receives the exact immutable `training_timesteps` and `training_sigmas`
+tuples from Task 4. One sampled index selects both values; it must never call
+`set_timesteps` or regenerate either array. The CPU contract uses the default
+`autocast_dtype=None`; `RealSanaPilotBackend` passes `torch.bfloat16`. Keep
+autocast scoped only to the SANA transformer call, keep amortizer logits/scales
+and loss accumulation FP32, and enable
+`transformer.enable_gradient_checkpointing()` before constructing the trainer.
+Never move `loss.backward()` outside `adapter_bank.activate(...)`.
 
 - [ ] **Step 4: Run the flow and gradient contracts**
 
