@@ -215,7 +215,9 @@ git commit -m "build: add locked sana pilot dependencies"
 - Create: `tests/contract/test_dynamic_atom_linear_contract.py`
 - Create: `tests/contract/test_dynamic_atom_linear_cuda_memory.py`
 
-- [ ] **Step 1: Write tests for zero coefficients and explicit dense equivalence**
+- [ ] **Step 1: Write the complete validation, lifecycle, and numerical contract first**
+
+The tests must cover an exact `nn.Linear` base, exact built-in positive integers for rank/count (including rejection of booleans and `int` subclasses), atom device/dtype inheritance, preservation and freezing of the original base object, and transient coefficients that never enter parameters, buffers, or `state_dict` even when the caller passes an `nn.Parameter`. Test nested-context rejection before inspecting the inner value, exception cleanup/reuse, no-context equivalence, exact zero behavior, bias/no-bias, global coefficients with all native Linear leading dimensions, and batched coefficients for inputs with a batch dimension. Invalid coefficient rank/width, scalar input, feature width, and coefficient batch size must fail before the base executes.
 
 ```python
 # tests/unit/test_dynamic_atom_linear.py
@@ -285,60 +287,107 @@ from torch.nn import functional as F
 
 
 class DynamicAtomLinear(nn.Module):
-    """Frozen linear layer plus per-example coefficients over immutable-shape low-rank atoms."""
+    """Frozen linear layer plus dynamically weighted low-rank atoms."""
+
+    _coefficients: Tensor | None
 
     def __init__(self, base: nn.Linear, *, rank: int, atom_count: int) -> None:
         super().__init__()
-        if rank < 1 or atom_count < 1:
-            raise ValueError("rank and atom_count must be positive")
+        if not isinstance(base, nn.Linear):
+            raise TypeError("base must be an nn.Linear")
+        if type(rank) is not int:
+            raise TypeError("rank must be an int")
+        if rank < 1:
+            raise ValueError("rank must be positive")
+        if type(atom_count) is not int:
+            raise TypeError("atom_count must be an int")
+        if atom_count < 1:
+            raise ValueError("atom_count must be positive")
         self.base = base
         self.base.requires_grad_(False)
         self.rank = rank
         self.atom_count = atom_count
-        self.atom_down = nn.Parameter(torch.empty(atom_count, rank, base.in_features))
-        self.atom_up = nn.Parameter(torch.empty(atom_count, base.out_features, rank))
+        self.atom_down = nn.Parameter(
+            base.weight.new_empty((atom_count, rank, base.in_features))
+        )
+        self.atom_up = nn.Parameter(
+            base.weight.new_empty((atom_count, base.out_features, rank))
+        )
         nn.init.normal_(self.atom_down, mean=0.0, std=0.01)
         nn.init.normal_(self.atom_up, mean=0.0, std=0.01)
-        self._coefficients: Tensor | None = None
+        object.__setattr__(self, "_coefficients", None)
 
     @contextmanager
     def use_coefficients(self, coefficients: Tensor) -> Iterator[None]:
         if self._coefficients is not None:
-            raise RuntimeError("dynamic coefficients are already active")
-        if coefficients.ndim not in (1, 2) or coefficients.shape[-1] != self.atom_count:
-            raise ValueError(f"coefficients must have shape [{self.atom_count}] or [B, {self.atom_count}]")
-        self._coefficients = coefficients
+            raise RuntimeError("coefficients are already active")
+        if not isinstance(coefficients, Tensor):
+            raise TypeError("coefficients must be a Tensor")
+        if coefficients.ndim not in (1, 2):
+            raise ValueError("coefficients must be 1D or 2D")
+        if coefficients.shape[-1] != self.atom_count:
+            raise ValueError(f"coefficient atom dimension must be {self.atom_count}")
+        object.__setattr__(self, "_coefficients", coefficients)
         try:
             yield
         finally:
-            self._coefficients = None
+            object.__setattr__(self, "_coefficients", None)
+
+    def _validate_input(self, x: Tensor, coefficients: Tensor | None) -> None:
+        if not isinstance(x, Tensor):
+            raise TypeError("input must be a Tensor")
+        if x.ndim < 1:
+            raise ValueError("input must have at least one dimension")
+        if x.shape[-1] != self.base.in_features:
+            raise ValueError(f"input feature dimension must be {self.base.in_features}")
+        if coefficients is not None and coefficients.ndim == 2:
+            if x.ndim < 2:
+                raise ValueError("batched coefficients require input with a batch dimension")
+            coefficient_batch = coefficients.shape[0]
+            input_batch = x.shape[0]
+            if coefficient_batch != input_batch:
+                raise ValueError(
+                    f"coefficient batch {coefficient_batch} does not match "
+                    f"input batch {input_batch}"
+                )
+
+    def _guard_backward_context(self, output: Tensor, coefficients: Tensor) -> Tensor:
+        if not output.requires_grad:
+            return output
+
+        def require_active_context(gradient: Tensor) -> Tensor:
+            if self._coefficients is not coefficients:
+                raise RuntimeError("coefficient context must remain active through backward")
+            return gradient
+
+        output.register_hook(require_active_context)  # type: ignore[no-untyped-call]
+        return output
 
     def forward(self, x: Tensor) -> Tensor:
-        output = self.base(x)
         coefficients = self._coefficients
+        self._validate_input(x, coefficients)
+        output: Tensor = self.base(x)
         if coefficients is None:
             return output
-        if coefficients.ndim == 2 and coefficients.shape[0] != x.shape[0]:
-            raise ValueError("per-example coefficient batch does not match input batch")
-        coefficients = coefficients.to(device=x.device, dtype=x.dtype)
         dynamic = torch.zeros_like(output)
         for atom_index in range(self.atom_count):
             low_rank = F.linear(x, self.atom_down[atom_index])
             atom_output = F.linear(low_rank, self.atom_up[atom_index])
             scale = coefficients[atom_index] if coefficients.ndim == 1 else coefficients[:, atom_index]
+            scale = scale.to(device=atom_output.device, dtype=atom_output.dtype)
             if scale.ndim == 1:
                 scale = scale.reshape(scale.shape[0], *([1] * (atom_output.ndim - 1)))
             dynamic = dynamic + atom_output * scale
-        return output + dynamic
+        return self._guard_backward_context(output + dynamic, coefficients)
 ```
 
 - [ ] **Step 4: Run the numerical tests**
 
 Run: `uv run pytest tests/unit/test_dynamic_atom_linear.py -q`
 
-Expected: `3 passed`.
+Expected: every constructor, context, shape, zero, no-context, and dense-equivalence case passes for global and batched coefficients without narrowing the base Linear leading-dimension semantics.
 
-- [ ] **Step 5: Add gradient, cleanup, checkpoint-recompute, and no-dense-allocation contracts**
+- [ ] **Step 5: Add registration, gradient, autocast, checkpoint, serialization, and allocation contracts**
 
 ```python
 # tests/contract/test_dynamic_atom_linear_contract.py
@@ -381,8 +430,12 @@ def test_coefficients_stay_active_during_checkpoint_recompute() -> None:
     assert alpha.grad is not None
 ```
 
+Expand these representative tests into the exact contract in `tests/contract/test_dynamic_atom_linear_contract.py`: an active `nn.Parameter` coefficient must not appear in `named_parameters()`, `named_buffers()`, or `state_dict()`; strict state-dict roundtrip must preserve outputs, frozen base parameters, and trainable atoms. Gradients must reach `x`, the original coefficient leaf, and both atom factors but never the base. Under CPU BF16 autocast, FP32 input and FP32 coefficients must still produce BF16 output, with the cast gradient returning to the original FP32 coefficient leaf. Compare eager and `checkpoint(..., use_reentrant=False)` outputs and every gradient, and use a forward hook to prove forward and recomputation observe the same coefficient object. Backward after leaving the coefficient context must raise `coefficient context must remain active through backward` before it can silently recompute the frozen-only path; a later valid context must remain usable.
+
 ```python
 # tests/contract/test_dynamic_atom_linear_cuda_memory.py
+from collections.abc import Callable
+
 import pytest
 import torch
 from torch import nn
@@ -391,33 +444,52 @@ from torch.nn import functional as F
 from ratemem.adapters.dynamic_atom_linear import DynamicAtomLinear
 
 
-def _peak_bytes(callable_: object) -> int:
+WIDTH = 2240
+DENSE_WEIGHT_BYTES = WIDTH * WIDTH * torch.bfloat16.itemsize
+MINIMUM_GAP_BYTES = DENSE_WEIGHT_BYTES // 2
+
+
+def _peak_bytes(callable_: Callable[[], torch.Tensor]) -> int:
+    torch.cuda.synchronize()
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     baseline = torch.cuda.memory_allocated()
-    callable_()  # type: ignore[operator]
+    result = callable_()
     torch.cuda.synchronize()
-    return torch.cuda.max_memory_allocated() - baseline
+    peak = torch.cuda.max_memory_allocated() - baseline
+    del result
+    return peak
 
 
 @pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA contract runs in the Modal pilot")
-def test_dynamic_path_peaks_below_explicit_dense_delta() -> None:
-    base = nn.Linear(2240, 2240, bias=False, device="cuda", dtype=torch.bfloat16)
-    layer = DynamicAtomLinear(base, rank=4, atom_count=4).to("cuda", dtype=torch.bfloat16)
-    x = torch.randn(1, 128, 2240, device="cuda", dtype=torch.bfloat16)
-    alpha = torch.randn(4, device="cuda", dtype=torch.bfloat16)
+def test_dynamic_path_has_a_repeatable_gap_below_explicit_dense_delta() -> None:
+    base = nn.Linear(WIDTH, WIDTH, bias=False, device="cuda", dtype=torch.bfloat16)
+    layer = DynamicAtomLinear(base, rank=4, atom_count=4)
+    x = torch.randn(1, 128, WIDTH, device="cuda", dtype=torch.bfloat16)
+    coefficients = torch.randn(4, device="cuda", dtype=torch.bfloat16)
 
-    def dynamic() -> None:
-        with layer.use_coefficients(alpha):
-            layer(x)
+    def dynamic() -> torch.Tensor:
+        with layer.use_coefficients(coefficients):
+            return layer(x)
 
-    def explicit() -> None:
-        delta = torch.einsum("a,aor,ari->oi", alpha, layer.atom_up, layer.atom_down)
-        F.linear(x, layer.base.weight + delta)
+    def explicit() -> torch.Tensor:
+        delta = torch.einsum(
+            "a,aor,ari->oi", coefficients, layer.atom_up, layer.atom_down
+        )
+        return F.linear(x, layer.base.weight + delta)
 
-    assert _peak_bytes(dynamic) < _peak_bytes(explicit)
+    dynamic()
+    explicit()
+    torch.cuda.synchronize()
+    dynamic_peaks = [_peak_bytes(dynamic)]
+    explicit_peaks = [_peak_bytes(explicit)]
+    explicit_peaks.append(_peak_bytes(explicit))
+    dynamic_peaks.append(_peak_bytes(dynamic))
+    assert max(dynamic_peaks) + MINIMUM_GAP_BYTES <= min(explicit_peaks)
 ```
+
+The CUDA contracts are marked `cuda` and are not run locally. One small contract passes a CPU coefficient leaf to a CUDA BF16 layer and proves both output placement and gradient return to the original CPU leaf. For the peak contract, warm both paths, synchronize before resetting and after each call, measure in dynamic/explicit and explicit/dynamic order, and require at least half one dense BF16 2240x2240 weight of separation so allocator noise cannot turn a one-byte comparison into a pass.
 
 Add this deterministic allocation-shape test to `tests/contract/test_dynamic_atom_linear_contract.py`; the separate CUDA test supplies the required peak-memory instrumentation:
 
@@ -446,7 +518,7 @@ def test_dynamic_path_never_passes_a_dense_delta_weight_to_linear(monkeypatch: M
 
 Run: `uv run pytest tests/unit/test_dynamic_atom_linear.py tests/contract/test_dynamic_atom_linear_contract.py -q`
 
-Expected: all CPU tests pass; no base parameter has a gradient and the coefficient context is empty after each call.
+Expected: all CPU tests pass; direct/global/batched numerical cases match dense references, zero is exact, transient state never serializes, autocast does not promote BF16 output, eager/checkpoint outputs and gradients agree, outside-context checkpoint backward fails closed, no base parameter has a gradient, and the coefficient context is empty and reusable after every exit.
 
 - [ ] **Step 7: Commit the dynamic linear contract**
 
