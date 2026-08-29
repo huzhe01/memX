@@ -221,6 +221,8 @@ def test_each_execution_commits_one_create_only_receipt(
     monkeypatch.setenv("MODAL_TASK_ID", "task-internal")
 
     first = module._commit_execution_receipt(_request(), artifact_root=artifact_root)
+    first_snapshot = first[0].read_bytes() + b"\n"
+    assert first[3] == hashlib.sha256(first_snapshot).hexdigest()
     second = module._commit_execution_receipt(_request(), artifact_root=artifact_root)
 
     receipt_directory = artifact_root / "execution-receipts" / str(_request()["attempt_id"])
@@ -229,6 +231,8 @@ def test_each_execution_commits_one_create_only_receipt(
     assert files[0].suffix == files[1].suffix == ".json"
     assert first[0] != second[0]
     assert first[2] == 1 and second[2] == 2
+    second_snapshot = b"".join(path.read_bytes() + b"\n" for path in files)
+    assert second[3] == hashlib.sha256(second_snapshot).hexdigest()
     for path in files:
         payload = json.loads(path.read_text())
         assert payload["receipt_id"] == path.stem
@@ -253,8 +257,8 @@ def test_receipt_handles_short_write_and_rejects_unsafe_directories(
         return real_write(descriptor, content)
 
     monkeypatch.setattr(module.os, "write", short_once)
-    path, _directory, count, _function_id, _input_id = module._commit_execution_receipt(
-        _request(), artifact_root=artifact_root
+    path, _directory, count, _snapshot_sha256, _function_id, _input_id = (
+        module._commit_execution_receipt(_request(), artifact_root=artifact_root)
     )
     assert shortened and count == 1 and json.loads(path.read_text())["attempt_id"]
 
@@ -407,8 +411,8 @@ def test_snapshot_rejects_semantically_invalid_receipt(
     module = _load_with_fake_modal(monkeypatch)
     artifact_root = tmp_path / "artifacts"
     artifact_root.mkdir(mode=0o700)
-    first, _directory, _count, _function, _input = module._commit_execution_receipt(
-        _request(), artifact_root=artifact_root
+    first, _directory, _count, _snapshot_sha256, _function, _input = (
+        module._commit_execution_receipt(_request(), artifact_root=artifact_root)
     )
     payload = json.loads(first.read_text())
     mutation(payload)

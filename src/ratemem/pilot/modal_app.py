@@ -427,8 +427,9 @@ def _receipt_snapshot(
     *,
     current_name: str,
     current_identity: tuple[int, int],
-) -> int:
+) -> tuple[int, str]:
     names = sorted(os.listdir(directory_descriptor))
+    digest = hashlib.sha256()
     for name in names:
         if (
             len(name) != 69
@@ -452,16 +453,18 @@ def _receipt_snapshot(
                 raise ValueError("execution receipt request differs within one attempt")
             if decoded.get("receipt_id") != name[:-5]:
                 raise ValueError("execution receipt identity or canonical content is invalid")
+            digest.update(content)
+            digest.update(b"\n")
         finally:
             os.close(descriptor)
-    return len(names)
+    return len(names), digest.hexdigest()
 
 
 def _commit_execution_receipt(
     request: dict[str, object],
     *,
     artifact_root: Path = Path("/artifacts"),
-) -> tuple[Path, Path, int, str, str]:
+) -> tuple[Path, Path, int, str, str, str]:
     checked_request = _validate_request(request)
     function_call_id = modal.current_function_call_id()
     input_id = modal.current_input_id()
@@ -558,7 +561,7 @@ def _commit_execution_receipt(
             attempt_identity,
             attempt_id,
         )
-        receipt_count = _receipt_snapshot(
+        receipt_count, receipt_snapshot_sha256 = _receipt_snapshot(
             attempt_descriptor,
             checked_request,
             current_name=receipt_path.name,
@@ -574,7 +577,14 @@ def _commit_execution_receipt(
             attempt_identity,
             attempt_id,
         )
-        return receipt_path, receipt_directory, receipt_count, function_call_id, input_id
+        return (
+            receipt_path,
+            receipt_directory,
+            receipt_count,
+            receipt_snapshot_sha256,
+            function_call_id,
+            input_id,
+        )
     finally:
         if named_descriptor >= 0:
             os.close(named_descriptor)
@@ -602,9 +612,14 @@ def _commit_execution_receipt(
 # restrict_modal_access is intentionally omitted: Volume.commit requires Modal resource access.
 def run_first_pilot(request: dict[str, object]) -> dict[str, object]:
     checked_request = _validate_request(request)
-    receipt_path, receipt_directory, receipt_count, function_call_id, input_id = (
-        _commit_execution_receipt(checked_request)
-    )
+    (
+        receipt_path,
+        receipt_directory,
+        receipt_count,
+        receipt_snapshot_sha256,
+        function_call_id,
+        input_id,
+    ) = _commit_execution_receipt(checked_request)
     task_id = os.environ["MODAL_TASK_ID"]
     if not task_id:
         raise RuntimeError("Modal task identity became unavailable after receipt publication")
@@ -640,6 +655,7 @@ def run_first_pilot(request: dict[str, object]) -> dict[str, object]:
             "execution_receipt_path": str(receipt_path),
             "execution_receipt_directory": str(receipt_directory),
             "execution_receipt_count": receipt_count,
+            "execution_receipts_sha256": receipt_snapshot_sha256,
             "execution_receipt_semantics": _RECEIPT_SEMANTICS,
         },
     )
