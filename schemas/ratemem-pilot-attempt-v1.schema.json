@@ -116,21 +116,26 @@
           }
         },
         "warmup_steps": {"const": 10}, "measured_steps": {"const": 20},
-        "p50_step_seconds": {"type": "number", "exclusiveMinimum": 0},
-        "p95_step_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "p50_step_seconds": {"oneOf": [{"type": "number", "exclusiveMinimum": 0}, {"type": "null"}]},
+        "p95_step_seconds": {"oneOf": [{"type": "number", "exclusiveMinimum": 0}, {"type": "null"}]},
         "held_in_step_cap": {"type": "integer", "minimum": 0},
-        "initial_flow_loss": {"type": "number", "minimum": 0},
-        "final_flow_loss": {"type": "number", "minimum": 0},
+        "initial_flow_loss": {"oneOf": [{"type": "number", "minimum": 0}, {"type": "null"}]},
+        "final_flow_loss": {"oneOf": [{"type": "number", "minimum": 0}, {"type": "null"}]},
         "transformer_passes_per_step": {"const": 1}
       }
     },
     "checkpoint": {
-      "type": "object", "additionalProperties": false,
-      "required": ["path", "sha256", "bytes"],
-      "properties": {
-        "path": {"const": "trainable.safetensors"}, "sha256": {"$ref": "#/$defs/sha256"},
-        "bytes": {"type": "integer", "minimum": 1}
-      }
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["path", "sha256", "bytes"],
+          "properties": {
+            "path": {"const": "trainable.safetensors"}, "sha256": {"$ref": "#/$defs/sha256"},
+            "bytes": {"type": "integer", "minimum": 1}
+          }
+        },
+        {"type": "null"}
+      ]
     },
     "files": {
       "type": "object", "additionalProperties": false,
@@ -151,7 +156,7 @@
     "probe_name": {"enum": ["checkpoint_compatibility", "dynamic_numerics", "gradient_flow", "frozen_backbone", "peak_memory", "one_step_inference", "one_timestep_backward", "step_timing", "held_in_loss"]},
     "probe_result": {
       "type": "object", "additionalProperties": false, "required": ["status"],
-      "properties": {"status": {"enum": ["pass", "fail"]}}
+      "properties": {"status": {"enum": ["pass", "fail", "not_run"]}}
     }
   }
 }

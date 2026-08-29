@@ -130,6 +130,23 @@ def valid_attempt(checkpoint: bytes = b"checkpoint") -> dict[str, object]:
     }
 
 
+def early_failure_attempt(status: str = "oom") -> dict[str, object]:
+    payload = valid_attempt()
+    payload["status"] = status
+    payload["error"] = {"type": "CudaOutOfMemory", "message": "allocation failed"}
+    probes = payload["probes"]
+    probes["results"] = {  # type: ignore[index]
+        name: {"status": "not_run"} for name in PROBE_NAMES
+    }
+    probes["p50_step_seconds"] = None  # type: ignore[index]
+    probes["p95_step_seconds"] = None  # type: ignore[index]
+    probes["held_in_step_cap"] = 0  # type: ignore[index]
+    probes["initial_flow_loss"] = None  # type: ignore[index]
+    probes["final_flow_loss"] = None  # type: ignore[index]
+    payload["checkpoint"] = None
+    return payload
+
+
 def _identity(content: bytes = b"checkpoint") -> CheckpointFileIdentity:
     return CheckpointFileIdentity(sha256=_sha(content), byte_count=len(content))
 
@@ -199,7 +216,69 @@ def test_success_requires_all_canonical_probes_and_failure_requires_failed_probe
     with pytest.raises(ValueError, match="failed probe|fail"):
         validate_attempt(failed)
     failed["probes"]["results"]["held_in_loss"]["status"] = "fail"  # type: ignore[index]
+    failed["probes"]["final_flow_loss"] = 1.1  # type: ignore[index]
     validate_attempt(failed)
+
+
+def test_early_failure_is_honest_about_not_run_metrics_and_missing_checkpoint() -> None:
+    validate_attempt(early_failure_attempt())
+
+    false_success = early_failure_attempt()
+    false_success["status"] = "succeeded"
+    false_success["error"] = None
+    with pytest.raises(ValueError, match="successful|checkpoint|timing|loss|pass"):
+        validate_attempt(false_success)
+
+    no_failed_probe = early_failure_attempt("probe_failed")
+    with pytest.raises(ValueError, match="failed probe|fail"):
+        validate_attempt(no_failed_probe)
+
+
+def test_held_in_probe_status_is_bound_to_measured_loss_direction() -> None:
+    false_success = valid_attempt()
+    false_success["probes"]["final_flow_loss"] = 1.1  # type: ignore[index]
+    with pytest.raises(ValueError, match="loss|decrease|direction"):
+        validate_attempt(false_success)
+
+    false_failure = valid_attempt()
+    false_failure["status"] = "probe_failed"
+    false_failure["error"] = {
+        "type": "ProbeFailure",
+        "message": "held-in loss did not decrease",
+    }
+    false_failure["probes"]["results"]["held_in_loss"]["status"] = "fail"  # type: ignore[index]
+    with pytest.raises(ValueError, match="loss|decrease|direction"):
+        validate_attempt(false_failure)
+
+    honest_failure = deepcopy(false_failure)
+    honest_failure["probes"]["final_flow_loss"] = 1.1  # type: ignore[index]
+    validate_attempt(honest_failure)
+
+
+def test_early_failure_writer_publishes_exact_bundle_without_fake_checkpoint(
+    tmp_path: Path,
+) -> None:
+    writer = ArtifactWriter(
+        tmp_path / "failed-attempt",
+        early_failure_attempt(),
+        checkpoint_identity=None,
+    )
+    for name in (
+        "config.json",
+        "rates.json",
+        "dataset-manifest.json",
+        "execution-receipts.jsonl",
+        "metrics.jsonl",
+    ):
+        writer.write_bytes(name, f"{name}\n".encode())
+    with pytest.raises(RuntimeError, match="checkpoint"):
+        writer.write_checkpoint(tmp_path / "absent.safetensors")
+    pending = writer.write_pending()
+    decoded = json.loads(pending.read_text())
+    assert decoded["status"] == "oom"
+    assert decoded["checkpoint"] is None
+    assert decoded["probes"]["p95_step_seconds"] is None
+    assert not (writer.root / "trainable.safetensors").exists()
 
 
 @pytest.mark.parametrize(

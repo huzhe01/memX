@@ -21,13 +21,12 @@ from jsonschema import Draft202012Validator, FormatChecker  # type: ignore[impor
 from ratemem.adapters.checkpoint import CheckpointFileIdentity
 
 SCHEMA_PATH: Final = Path(__file__).parents[3] / "schemas/ratemem-pilot-attempt-v1.schema.json"
-_REQUIRED_FILES: Final = (
+_REQUIRED_FILES_WITHOUT_CHECKPOINT: Final = (
     "config.json",
     "dataset-manifest.json",
     "execution-receipts.jsonl",
     "metrics.jsonl",
     "rates.json",
-    "trainable.safetensors",
 )
 _PROBE_NAMES: Final = (
     "checkpoint_compatibility",
@@ -177,15 +176,53 @@ def validate_attempt(payload: dict[str, Any]) -> None:
     statuses = tuple(
         cast(dict[str, object], results[name])["status"] for name in _PROBE_NAMES
     )
-    if cast(float, probes["p50_step_seconds"]) > cast(float, probes["p95_step_seconds"]):
+    p50 = probes["p50_step_seconds"]
+    p95 = probes["p95_step_seconds"]
+    if (p50 is None) != (p95 is None):
+        raise ValueError("p50 and p95 step times must both be measured or both be null")
+    if p50 is not None and cast(float, p50) > cast(float, p95):
         raise ValueError("p50 step time must not exceed p95")
+    initial_loss = probes["initial_flow_loss"]
+    final_loss = probes["final_flow_loss"]
+    if (initial_loss is None) != (final_loss is None):
+        raise ValueError("initial and final flow losses must both be measured or both be null")
+    timing_status = cast(dict[str, object], results["step_timing"])["status"]
+    if timing_status == "pass" and p50 is None:
+        raise ValueError("a passing timing probe requires measured p50 and p95")
+    if timing_status == "not_run" and p50 is not None:
+        raise ValueError("a not-run timing probe must not report timing measurements")
+    loss_status = cast(dict[str, object], results["held_in_loss"])["status"]
+    if loss_status == "pass" and initial_loss is None:
+        raise ValueError("a passing held-in loss probe requires paired losses")
+    if (
+        loss_status == "pass"
+        and initial_loss is not None
+        and cast(float, final_loss) >= cast(float, initial_loss)
+    ):
+        raise ValueError("a passing held-in loss probe requires a strict loss decrease")
+    if loss_status == "not_run" and initial_loss is not None:
+        raise ValueError("a not-run held-in loss probe must not report losses")
+    if (
+        loss_status == "fail"
+        and initial_loss is not None
+        and cast(float, final_loss) < cast(float, initial_loss)
+    ):
+        raise ValueError("a failed held-in loss probe cannot report a loss decrease")
     status = payload["status"]
     if (status == "succeeded") != (payload["error"] is None):
         raise ValueError("only a succeeded attempt may have a null error")
     if status == "succeeded" and any(result != "pass" for result in statuses):
         raise ValueError("a successful attempt requires every canonical probe to pass")
-    if status != "succeeded" and not any(result == "fail" for result in statuses):
-        raise ValueError("a non-succeeded attempt requires at least one failed probe")
+    if status == "succeeded" and (
+        p50 is None or initial_loss is None or payload["checkpoint"] is None
+    ):
+        raise ValueError(
+            "a successful attempt requires timing, loss, and checkpoint evidence"
+        )
+    if status == "probe_failed" and not any(result == "fail" for result in statuses):
+        raise ValueError("a probe_failed attempt requires at least one failed probe")
+    if status == "probe_failed" and loss_status == "fail" and initial_loss is None:
+        raise ValueError("a held-in probe failure requires paired loss evidence")
 
 
 def _absolute(path: Path) -> Path:
@@ -253,18 +290,29 @@ class ArtifactWriter:
         root: Path,
         attempt: dict[str, Any],
         *,
-        checkpoint_identity: CheckpointFileIdentity,
+        checkpoint_identity: CheckpointFileIdentity | None,
     ) -> None:
-        if type(checkpoint_identity) is not CheckpointFileIdentity:
-            raise TypeError("checkpoint_identity must be an exact CheckpointFileIdentity")
-        checkpoint_identity.validate()
         validate_attempt(attempt)
-        checkpoint = cast(dict[str, object], attempt["checkpoint"])
-        if (
-            checkpoint["sha256"] != checkpoint_identity.sha256
-            or checkpoint["bytes"] != checkpoint_identity.byte_count
-        ):
-            raise ValueError("attempt checkpoint fields differ from checkpoint identity")
+        checkpoint = attempt["checkpoint"]
+        if checkpoint is None:
+            if checkpoint_identity is not None:
+                raise ValueError(
+                    "checkpoint identity must be absent when attempt checkpoint is null"
+                )
+        else:
+            if type(checkpoint_identity) is not CheckpointFileIdentity:
+                raise TypeError(
+                    "checkpoint_identity must be an exact CheckpointFileIdentity"
+                )
+            checkpoint_identity.validate()
+            checkpoint_fields = cast(dict[str, object], checkpoint)
+            if (
+                checkpoint_fields["sha256"] != checkpoint_identity.sha256
+                or checkpoint_fields["bytes"] != checkpoint_identity.byte_count
+            ):
+                raise ValueError(
+                    "attempt checkpoint fields differ from checkpoint identity"
+                )
         copied_attempt = copy.deepcopy(attempt)
         checked_root = _absolute(root)
         _assert_safe_ancestors(checked_root)
@@ -297,6 +345,9 @@ class ArtifactWriter:
         self._root_identity = (opened_root.st_dev, opened_root.st_ino)
         self._attempt = copied_attempt
         self._checkpoint_identity = checkpoint_identity
+        self._required_files = _REQUIRED_FILES_WITHOUT_CHECKPOINT + (
+            ("trainable.safetensors",) if checkpoint_identity is not None else ()
+        )
         self._sealed = False
         self._finalized = False
         self._closed = False
@@ -480,6 +531,8 @@ class ArtifactWriter:
 
     def write_checkpoint(self, source: Path) -> None:
         self._require_open()
+        if self._checkpoint_identity is None:
+            raise RuntimeError("attempt does not authorize a checkpoint artifact")
         checked_source = _absolute(source)
         _assert_safe_ancestors(checked_source)
         before = _secure_regular(checked_source, "checkpoint source")
@@ -533,7 +586,7 @@ class ArtifactWriter:
             for name in os.listdir(self._root_descriptor)
             if name not in _RESERVED_FILES and not name.startswith(".artifact-")
         )
-        if tuple(actual) != _REQUIRED_FILES:
+        if tuple(actual) != self._required_files:
             raise ValueError("artifact payload file set is not exactly canonical")
         entries: list[str] = []
         for name in actual:
@@ -557,7 +610,8 @@ class ArtifactWriter:
             finally:
                 os.close(descriptor)
             if name == "trainable.safetensors" and (
-                sha256 != self._checkpoint_identity.sha256
+                self._checkpoint_identity is None
+                or sha256 != self._checkpoint_identity.sha256
                 or byte_count != self._checkpoint_identity.byte_count
             ):
                 raise ValueError("checkpoint file differs from its Task8 identity")

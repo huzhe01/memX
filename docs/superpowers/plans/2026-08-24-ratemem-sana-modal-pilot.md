@@ -1990,9 +1990,12 @@ git commit -m "feat: serialize trainable sana adapter state"
 > validation admits only the nine engineering probes and cross-validates probe
 > status, launch identity, source identity, checkpoint identity, and success or
 > failure semantics.  The writer binds an externally retained checkpoint
-> identity, publishes the exact six-file attempt bundle through descriptor-
-> relative create-only writes, and re-verifies payloads, checksums, checkpoint
-> bytes, inodes, and the owner-only root across pending and final publication.
+> identity when a checkpoint exists, publishes an exact status-conditioned
+> five- or six-file attempt bundle through descriptor-relative create-only
+> writes, and re-verifies payloads, checksums, checkpoint bytes, inodes, and the
+> owner-only root across pending and final publication.  Early OOM/exception
+> records use explicit `not_run` probes and null timing/loss/checkpoint fields;
+> they never synthesize measurements or pretend that a checkpoint was saved.
 > Pending evidence is immutable and reconciliation creates a distinct final
 > record.  Atomic publication keeps the staging descriptor open through final
 > verification, fails closed on concurrent rewrites, and removes a disputed
