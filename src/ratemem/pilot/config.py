@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Never, cast
 
@@ -14,6 +15,35 @@ from ratemem.adapters.sana_layout import (
 )
 
 PILOT_OPTIMIZER_CLASS = "AdamW"
+
+
+def _canonical_modal_budget_payload() -> dict[str, object]:
+    return {
+        "schema_version": "1.0.0",
+        "profile": "ratemem-pilot",
+        "environment": "main",
+        "workspace_budget_usd": "28.00",
+        "internal_limit_usd": "27.00",
+        "first_pilot_allocation_usd": "21.00",
+        "setup_probe_allocation_usd": "2.00",
+        "timing_probe_allocation_usd": "3.00",
+        "held_in_pilot_allocation_usd": "16.00",
+        "unallocated_safety_buffer_usd": "6.00",
+        "attestation_max_age_seconds": 900,
+        "gpu": "L40S",
+        "gpu_count": 1,
+        "cpu_cores": 4,
+        "memory_gib": 32,
+        "timeout_seconds": 7200,
+        "startup_timeout_seconds": 1800,
+        "storage_gib_bound": 24,
+        "non_gpu_setup_allowance_usd": "2.00",
+        "retries": 0,
+        "max_containers": 1,
+        "detached": False,
+        "cache_volume": "ratemem-sana-cache",
+        "artifact_volume": "ratemem-pilot-artifacts",
+    }
 
 
 def pilot_adamw_kwargs() -> dict[str, object]:
@@ -605,3 +635,104 @@ class SubjectsPilotConfig:
                 cast(list[str], payload["description_field_order"])
             ),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ModalBudgetConfig:
+    profile: str
+    environment: str
+    workspace_budget_usd: Decimal
+    internal_limit_usd: Decimal
+    first_pilot_allocation_usd: Decimal
+    setup_probe_allocation_usd: Decimal
+    timing_probe_allocation_usd: Decimal
+    held_in_pilot_allocation_usd: Decimal
+    unallocated_safety_buffer_usd: Decimal
+    attestation_max_age_seconds: int
+    gpu: str
+    gpu_count: int
+    cpu_cores: int
+    memory_gib: int
+    timeout_seconds: int
+    startup_timeout_seconds: int
+    storage_gib_bound: int
+    non_gpu_setup_allowance_usd: Decimal
+    retries: int
+    max_containers: int
+    detached: bool
+    cache_volume: str
+    artifact_volume: str
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if type(self) is not ModalBudgetConfig:
+            raise TypeError("budget config must be an exact ModalBudgetConfig")
+        actual: dict[str, object] = {
+            "schema_version": "1.0.0",
+            "profile": self.profile,
+            "environment": self.environment,
+            "workspace_budget_usd": str(self.workspace_budget_usd),
+            "internal_limit_usd": str(self.internal_limit_usd),
+            "first_pilot_allocation_usd": str(self.first_pilot_allocation_usd),
+            "setup_probe_allocation_usd": str(self.setup_probe_allocation_usd),
+            "timing_probe_allocation_usd": str(self.timing_probe_allocation_usd),
+            "held_in_pilot_allocation_usd": str(self.held_in_pilot_allocation_usd),
+            "unallocated_safety_buffer_usd": str(self.unallocated_safety_buffer_usd),
+            "attestation_max_age_seconds": self.attestation_max_age_seconds,
+            "gpu": self.gpu,
+            "gpu_count": self.gpu_count,
+            "cpu_cores": self.cpu_cores,
+            "memory_gib": self.memory_gib,
+            "timeout_seconds": self.timeout_seconds,
+            "startup_timeout_seconds": self.startup_timeout_seconds,
+            "storage_gib_bound": self.storage_gib_bound,
+            "non_gpu_setup_allowance_usd": str(self.non_gpu_setup_allowance_usd),
+            "retries": self.retries,
+            "max_containers": self.max_containers,
+            "detached": self.detached,
+            "cache_volume": self.cache_volume,
+            "artifact_volume": self.artifact_volume,
+        }
+        _require_canonical_value(
+            actual,
+            _canonical_modal_budget_payload(),
+            "Modal budget config",
+        )
+        if (
+            self.setup_probe_allocation_usd
+            + self.timing_probe_allocation_usd
+            + self.held_in_pilot_allocation_usd
+            != self.first_pilot_allocation_usd
+            or self.first_pilot_allocation_usd + self.unallocated_safety_buffer_usd
+            != self.internal_limit_usd
+        ):
+            raise ValueError("Modal budget phase allocation arithmetic changed")
+
+    @classmethod
+    def load(cls, path: Path) -> ModalBudgetConfig:
+        decoded = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_object_without_duplicates,
+            parse_constant=_reject_nonfinite_constant,
+        )
+        expected = _canonical_modal_budget_payload()
+        _require_canonical_value(decoded, expected, "Modal budget root")
+        payload = cast(dict[str, object], decoded)
+        decimal_fields = {
+            "workspace_budget_usd",
+            "internal_limit_usd",
+            "first_pilot_allocation_usd",
+            "setup_probe_allocation_usd",
+            "timing_probe_allocation_usd",
+            "held_in_pilot_allocation_usd",
+            "unallocated_safety_buffer_usd",
+            "non_gpu_setup_allowance_usd",
+        }
+        values: dict[str, object] = {
+            key: Decimal(cast(str, value)) if key in decimal_fields else value
+            for key, value in payload.items()
+            if key != "schema_version"
+        }
+        return cls(**cast(Any, values))

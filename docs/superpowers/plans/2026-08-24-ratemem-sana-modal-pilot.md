@@ -2318,6 +2318,24 @@ git commit -m "feat: validate pilot attempt artifacts"
 
 ### Task 10: Enforce workspace identity, the USD 28 cap, and the USD 27 internal ledger
 
+> **Implementation reconciliation (complete):** The executable boundary is
+> intentionally stronger than the illustrative snippets below.  Modal queries
+> run only with a verified owner-only config path, an exact named profile, and
+> a rebuilt environment that cannot inherit token/OAuth overrides.  Missing,
+> unauthorized, warning-bearing, malformed, or semantically inconsistent
+> billing responses fail closed; metered usage is checked before credits.
+> Because Modal exposes no documented Workspace-budget read API, the outer USD
+> 28 boundary is explicitly an operator-attested dashboard contract rather than
+> an API claim: canonical private evidence binds the exact workspace, budget,
+> UTC freshness, fixed confirmation, and a hashed dashboard capture.  The USD
+> 27 admission ledger uses exact Decimal arithmetic plus a create-only receipt
+> for every hash-chained entry, so a single-file rollback, truncation, deletion,
+> or interrupted receipt publication permanently blocks another reservation.
+> No purely local design can detect a same-UID actor deleting the ledger and all
+> receipts together; that capability boundary is explicit.  The final review
+> passed 66 focused tests plus five targeted replays with no findings, and no
+> real Modal configuration, credential, network query, or paid call was used.
+
 **Files:**
 - Create: `configs/pilot/modal-budget.json`
 - Modify: `src/ratemem/pilot/config.py`
@@ -2331,7 +2349,7 @@ git commit -m "feat: validate pilot attempt artifacts"
 - Create: `tests/unit/test_private_io.py`
 - Create: `tests/unit/test_cost_ledger.py`
 
-- [ ] **Step 1: Write fail-closed workspace tests**
+- [x] **Step 1: Write fail-closed workspace tests**
 
 ```python
 # tests/unit/test_workspace_guard.py
@@ -2468,7 +2486,7 @@ def test_private_lock_rejects_instead_of_repairing_existing_permissive_file(tmp_
     assert lock_path.stat().st_mode & 0o777 == 0o644
 ```
 
-- [ ] **Step 2: Write Decimal ledger tests for open reservations and the internal bound**
+- [x] **Step 2: Write Decimal ledger tests for open reservations and the internal bound**
 
 ```python
 # tests/unit/test_cost_ledger.py
@@ -2509,13 +2527,13 @@ def test_reservation_obeys_known_plus_pending_plus_new_at_27(tmp_path: Path) -> 
     ledger.verify_hash_chain()
 ```
 
-- [ ] **Step 3: Run the guard/ledger tests and observe missing modules**
+- [x] **Step 3: Run the guard/ledger tests and observe missing modules**
 
 Run: `uv run pytest tests/unit/test_private_io.py tests/unit/test_workspace_guard.py tests/unit/test_cost_ledger.py -q`
 
 Expected: collection fails because the private-I/O, workspace, and cost modules do not exist.
 
-- [ ] **Step 4: Commit the hard cost/resource configuration**
+- [x] **Step 4: Commit the hard cost/resource configuration**
 
 ```json
 {
@@ -2609,7 +2627,7 @@ class ModalBudgetConfig:
 
 This exact payload comparison rejects a list or a GPU string containing a count or fallback. The three first-pilot buckets are recorded separately in `rates.json` and `metrics.jsonl` even though they run in the one authorized synchronous invocation; they do not authorize three invocations. The USD 6.00 safety buffer is never reserved and authorizes no second submission.
 
-- [ ] **Step 5: Add credential-free Modal response fixtures**
+- [x] **Step 5: Add credential-free Modal response fixtures**
 
 ```json
 [
@@ -2637,7 +2655,7 @@ This exact payload comparison rejects a list or a GPU string containing a count 
 
 These files contain neither token IDs nor token secrets.
 
-- [ ] **Step 6: Implement owner-only atomic state I/O and locking**
+- [x] **Step 6: Implement owner-only atomic state I/O and locking**
 
 ```python
 # src/ratemem/pilot/private_io.py
@@ -2767,7 +2785,7 @@ def private_lock(path: Path) -> Iterator[None]:
 
 `ensure_private_directory` never repairs an existing permissive or foreign-owned directory; it stops. Reads use `O_NOFOLLOW`, require a regular single-link owner file, and validate the open descriptor rather than trusting a pre-open path check. Every immutable write is mode 0600, fsyncs the file, and fsyncs its directory. The lock file is itself owner-only and is shared by slot claim and submission consumption.
 
-- [ ] **Step 7: Implement the attested workspace snapshot and non-secret Modal queries**
+- [x] **Step 7: Implement the attested workspace snapshot and non-secret Modal queries**
 
 ```python
 # src/ratemem/pilot/workspace.py (core contract)
@@ -2914,7 +2932,7 @@ def verify_fresh_attestation_file(path: Path) -> WorkspaceSnapshot:
 
 `capture_workspace_snapshot` is called only after the operator has selected the intended first authorized workspace in the Modal dashboard, set its Workspace usage budget to exactly USD 28.00, and saved the Usage & Billing evidence file outside the repository. It records `metered_cost` before credits because the Workspace usage budget is also pre-credit. Raw `modal token info`, environment dumps, and Modal config contents are never captured.
 
-- [ ] **Step 8: Implement normalized rates, conservative bounds, and the append-only ledger**
+- [x] **Step 8: Implement normalized rates, conservative bounds, and the append-only ledger**
 
 ```python
 # src/ratemem/pilot/costs.py (types and admission contract)
@@ -3047,13 +3065,13 @@ class CostLedger:
 
 Implement reconciliation only when a fresh `modal billing summary --for "this month" --json` shows metered usage at least as high as the pre-launch value. If Modal billing is lagging, leave the reservation open, print `PENDING: billing data has not caught up; another launch is forbidden`, and exit 3. Never substitute `billed_cost`, credits, or the runner's estimate for the reconciled metered cost.
 
-- [ ] **Step 9: Run private-I/O, workspace, and ledger tests**
+- [x] **Step 9: Run private-I/O, workspace, and ledger tests**
 
 Run: `uv run pytest tests/unit/test_private_io.py tests/unit/test_workspace_guard.py tests/unit/test_cost_ledger.py -q`
 
 Expected: all tests pass; permissive/symlinked state fails closed, mismatched/stale cap evidence fails closed, and `known + pending + new > 27.00` is rejected.
 
-- [ ] **Step 10: Commit the private state and two-layer cost guard**
+- [x] **Step 10: Commit the private state and two-layer cost guard**
 
 ```bash
 git add configs/pilot/modal-budget.json src/ratemem/pilot/config.py src/ratemem/pilot/private_io.py src/ratemem/pilot/workspace.py src/ratemem/pilot/costs.py tests/fixtures/modal tests/unit/test_private_io.py tests/unit/test_workspace_guard.py tests/unit/test_cost_ledger.py

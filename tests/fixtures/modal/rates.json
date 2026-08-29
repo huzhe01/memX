@@ -1,0 +1,6 @@
+{
+  "gpu_l40s_per_second": "0.000542",
+  "cpu_core_per_second": "0.0000131",
+  "memory_gib_per_second": "0.00000222",
+  "volume_gib_month": "0.09"
+}

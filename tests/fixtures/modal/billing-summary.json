@@ -1,0 +1,6 @@
+{
+  "metered_cost": "1.25",
+  "billed_cost": "0.00",
+  "adjustments": {"credits": "-1.25"},
+  "metered_cost_breakdown": {"compute": "1.25"}
+}
