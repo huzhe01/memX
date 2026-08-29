@@ -199,6 +199,8 @@ def test_remote_validates_request_device_and_commits_receipt_before_model_work()
         "_forbidden_credentials()"
     )
     assert remote.index("_commit_execution_receipt(checked_request)") < remote.index("import torch")
+    assert 'task_id = os.environ["MODAL_TASK_ID"]' in remote
+    assert '"task_id": task_id' in remote
 
 
 def test_local_entrypoint_rechecks_environment_and_consumes_before_remote() -> None:

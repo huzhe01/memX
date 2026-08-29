@@ -605,6 +605,9 @@ def run_first_pilot(request: dict[str, object]) -> dict[str, object]:
     receipt_path, receipt_directory, receipt_count, function_call_id, input_id = (
         _commit_execution_receipt(checked_request)
     )
+    task_id = os.environ["MODAL_TASK_ID"]
+    if not task_id:
+        raise RuntimeError("Modal task identity became unavailable after receipt publication")
 
     present = _forbidden_credentials()
     if present:
@@ -632,7 +635,7 @@ def run_first_pilot(request: dict[str, object]) -> dict[str, object]:
             "submission_receipt_sha256": checked_request["submission_receipt_sha256"],
             "function_call_id": function_call_id,
             "input_id": input_id,
-            "task_id": os.environ.get("MODAL_TASK_ID"),
+            "task_id": task_id,
             "container_image_id": os.environ["MODAL_IMAGE_ID"],
             "execution_receipt_path": str(receipt_path),
             "execution_receipt_directory": str(receipt_directory),
