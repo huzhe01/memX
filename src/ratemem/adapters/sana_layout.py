@@ -4,7 +4,7 @@ from collections import Counter, OrderedDict
 from collections.abc import Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, cast
 from weakref import ReferenceType, ref
 
 import torch
@@ -111,16 +111,85 @@ class _CanonicalWrapperBinding:
 _ActivationState = tuple[Tensor | None, object | None, int | None]
 
 
+def _exact_instance_state(
+    module: nn.Module,
+    *,
+    path: str,
+    error_type: type[Exception],
+) -> dict[str, object]:
+    state = object.__getattribute__(module, "__dict__")
+    if type(state) is not dict:
+        raise error_type(f"{path}.__dict__ must be an exact built-in dict")
+    return cast(dict[str, object], state)
+
+
+def _exact_module_registry(
+    module: nn.Module,
+    *,
+    path: str,
+    error_type: type[Exception],
+) -> dict[str, nn.Module | None]:
+    state = _exact_instance_state(module, path=path, error_type=error_type)
+    registry = state.get("_modules")
+    if type(registry) is not dict:
+        raise error_type(f"{path}._modules must be an exact built-in dict")
+    return cast(dict[str, nn.Module | None], registry)
+
+
+def _require_unshadowed_module_segment(
+    owner: nn.Module,
+    segment: str,
+    *,
+    path: str,
+    shadow_error_type: type[Exception],
+    registry_error_type: type[Exception],
+) -> None:
+    state = _exact_instance_state(
+        owner, path=path, error_type=registry_error_type
+    )
+    parameters = state.get("_parameters")
+    buffers = state.get("_buffers")
+    if type(parameters) is not dict:
+        raise registry_error_type(
+            f"{path}._parameters must be an exact built-in dict"
+        )
+    if type(buffers) is not dict:
+        raise registry_error_type(
+            f"{path}._buffers must be an exact built-in dict"
+        )
+    shadowed = (
+        segment in state
+        or segment in parameters
+        or segment in buffers
+        or any(segment in vars(cls) for cls in type(owner).__mro__)
+    )
+    if shadowed:
+        raise shadow_error_type(
+            f"canonical module path has a shadow conflict at {path}"
+        )
+
+
 def _direct_module_at_path(root: nn.Module, path: str) -> nn.Module:
     current = root
+    traversed: list[str] = []
     for segment in path.split("."):
-        if type(current._modules) is not dict:
-            raise RuntimeError(
-                f"canonical module registry changed before {path}"
-            )
-        child = current._modules.get(segment)
+        traversed.append(segment)
+        current_path = ".".join(traversed)
+        registry = _exact_module_registry(
+            current,
+            path=current_path,
+            error_type=RuntimeError,
+        )
+        child = registry.get(segment)
         if not isinstance(child, nn.Module):
             raise RuntimeError(f"canonical module path no longer resolves: {path}")
+        _require_unshadowed_module_segment(
+            current,
+            segment,
+            path=current_path,
+            shadow_error_type=RuntimeError,
+            registry_error_type=RuntimeError,
+        )
         current = child
     return current
 
@@ -290,11 +359,12 @@ class SanaDynamicAdapterBank:
                 raise RuntimeError(
                     f"canonical adapter wrapper was released at {expected_path}"
                 )
-            if type(owner._modules) is not dict:
-                raise RuntimeError(
-                    f"canonical owner registry changed at {expected_path}"
-                )
-            if owner._modules.get(binding.attribute) is not wrapper:
+            owner_registry = _exact_module_registry(
+                owner,
+                path=expected_path,
+                error_type=RuntimeError,
+            )
+            if owner_registry.get(binding.attribute) is not wrapper:
                 raise RuntimeError(
                     f"canonical owner binding changed at {expected_path}"
                 )
@@ -465,20 +535,32 @@ def _inventory_targets(
 ) -> tuple[_TargetInventory, ...]:
     if not isinstance(transformer, nn.Module):
         raise TypeError("transformer must be an nn.Module")
-    if type(transformer._modules) is not dict:
-        raise TypeError("transformer._modules must be an exact built-in dict")
-    blocks = transformer._modules.get("transformer_blocks")
+    transformer_registry = _exact_module_registry(
+        transformer,
+        path="transformer",
+        error_type=TypeError,
+    )
+    blocks = transformer_registry.get("transformer_blocks")
     if not isinstance(blocks, nn.ModuleList):
         raise TypeError(
             "transformer_blocks must be a canonically registered nn.ModuleList"
         )
-    if type(blocks._modules) is not dict:
-        raise TypeError(
-            "transformer_blocks._modules must be an exact built-in dict"
-        )
-    if len(blocks) != expected_blocks:
+    _require_unshadowed_module_segment(
+        transformer,
+        "transformer_blocks",
+        path="transformer_blocks",
+        shadow_error_type=ValueError,
+        registry_error_type=TypeError,
+    )
+    blocks_registry = _exact_module_registry(
+        blocks,
+        path="transformer_blocks",
+        error_type=TypeError,
+    )
+    if len(blocks_registry) != expected_blocks:
         raise ValueError(
-            f"expected {expected_blocks} transformer blocks, got {len(blocks)}"
+            f"expected {expected_blocks} transformer blocks, "
+            f"got {len(blocks_registry)}"
         )
 
     module_occurrences = Counter(
@@ -513,33 +595,50 @@ def _inventory_targets(
 
     canonical_blocks: list[nn.Module] = []
     for block_index in range(expected_blocks):
-        block = blocks._modules.get(str(block_index))
+        block_name = str(block_index)
+        block = blocks_registry.get(block_name)
         if not isinstance(block, nn.Module):
             raise TypeError(
                 f"transformer_blocks.{block_index} must be canonically registered"
             )
+        _require_unshadowed_module_segment(
+            blocks,
+            block_name,
+            path=f"transformer_blocks.{block_index}",
+            shadow_error_type=ValueError,
+            registry_error_type=TypeError,
+        )
         canonical_blocks.append(block)
 
     for block_index, block in enumerate(canonical_blocks):
-        if type(block._modules) is not dict:
-            raise TypeError(
-                f"transformer_blocks.{block_index}._modules must be an "
-                "exact built-in dict"
-            )
+        block_path = f"transformer_blocks.{block_index}"
+        block_registry = _exact_module_registry(
+            block,
+            path=block_path,
+            error_type=TypeError,
+        )
         if module_occurrences[id(block)] != 1 or id(block) in block_ids:
             raise ValueError("transformer block module alias is forbidden")
         block_ids.add(id(block))
         for attention_name in ATTENTION_KINDS:
-            attention = block._modules.get(attention_name)
+            attention = block_registry.get(attention_name)
             attention_path = f"transformer_blocks.{block_index}.{attention_name}"
             if not isinstance(attention, nn.Module):
                 raise TypeError(
                     f"{attention_path} must be a canonically registered nn.Module"
                 )
-            if type(attention._modules) is not dict:
-                raise TypeError(
-                    f"{attention_path}._modules must be an exact built-in dict"
-                )
+            _require_unshadowed_module_segment(
+                block,
+                attention_name,
+                path=attention_path,
+                shadow_error_type=ValueError,
+                registry_error_type=TypeError,
+            )
+            attention_registry = _exact_module_registry(
+                attention,
+                path=attention_path,
+                error_type=TypeError,
+            )
             if (
                 module_occurrences[id(attention)] != 1
                 or id(attention) in attention_ids
@@ -548,11 +647,18 @@ def _inventory_targets(
             attention_ids.add(id(attention))
             for target_name in TARGET_MODULES:
                 path = f"{attention_path}.{target_name}"
-                target = attention._modules.get(target_name)
+                target = attention_registry.get(target_name)
                 if isinstance(target, _DYNAMIC_ATOM_LINEAR_TYPE):
                     raise ValueError(f"{path} is already wrapped")
                 if type(target) is not nn.Linear:
                     raise TypeError(f"{path} must be an exact nn.Linear")
+                _require_unshadowed_module_segment(
+                    attention,
+                    target_name,
+                    path=path,
+                    shadow_error_type=ValueError,
+                    registry_error_type=TypeError,
+                )
                 if (
                     module_occurrences[id(target)] != 1
                     or id(target) in linear_ids
@@ -662,7 +768,7 @@ def _inventory_targets(
                         path=path,
                         attention_name=attention_name,
                         owner=attention,
-                        registry=attention._modules,
+                        registry=attention_registry,
                         attribute=target_name,
                         base=target,
                     )
@@ -677,15 +783,43 @@ def _inventory_targets(
 
 def _commit_target_module(
     owner: nn.Module,
+    registry: dict[str, nn.Module | None],
     attribute: str,
     expected: nn.Module,
     replacement: nn.Module,
 ) -> None:
-    if type(owner._modules) is not dict:
+    state = _exact_instance_state(
+        owner,
+        path="commit target owner",
+        error_type=RuntimeError,
+    )
+    if type(registry) is not dict or state.get("_modules") is not registry:
         raise RuntimeError("target module registry changed before commit")
-    if owner._modules.get(attribute) is not expected:
+    if registry.get(attribute) is not expected:
         raise RuntimeError("target module changed before commit")
-    owner._modules[attribute] = replacement
+    registry[attribute] = replacement
+
+
+def _rollback_target_modules(targets: list[_TargetInventory]) -> None:
+    owner_states: dict[int, tuple[dict[str, object], object]] = {}
+    for target in targets:
+        identity = id(target.owner)
+        if identity not in owner_states:
+            state = _exact_instance_state(
+                target.owner,
+                path=target.path,
+                error_type=RuntimeError,
+            )
+            owner_states[identity] = (state, state.get("_modules"))
+
+    for target in reversed(targets):
+        _state, live_registry = owner_states[id(target.owner)]
+        if type(live_registry) is dict:
+            live_registry[target.attribute] = target.base
+        target.registry[target.attribute] = target.base
+    for target in reversed(targets):
+        state, _live_registry = owner_states[id(target.owner)]
+        state["_modules"] = target.registry
 
 
 def install_sana_dynamic_atoms(
@@ -720,6 +854,7 @@ def install_sana_dynamic_atoms(
             committed.append(target)
             _commit_target_module(
                 target.owner,
+                target.registry,
                 target.attribute,
                 target.base,
                 wrapper,
@@ -740,8 +875,7 @@ def install_sana_dynamic_atoms(
             bindings=bindings,
         )
     except Exception:
-        for target in reversed(committed):
-            target.registry[target.attribute] = target.base
+        _rollback_target_modules(committed)
         raise
     return bank
 

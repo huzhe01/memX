@@ -56,6 +56,30 @@ class _ToyAttention(nn.Module):
         )
 
 
+class _ExplodingNonDataDescriptor:
+    def __get__(self, instance: nn.Module, owner: type[nn.Module]) -> object:
+        del owner
+        state = object.__getattribute__(instance, "__dict__")
+        state["_shadow_getter_calls"] += 1
+        raise AssertionError("shadow descriptor getter executed")
+
+
+class _PropertyShadowAttention(_ToyAttention):
+    def __init__(self, width: int, *, bias: bool) -> None:
+        object.__setattr__(self, "_shadow_getter_calls", 0)
+        super().__init__(width, bias=bias)
+
+    @property
+    def to_q(self) -> nn.Linear:
+        state = object.__getattribute__(self, "__dict__")
+        state["_shadow_getter_calls"] += 1
+        raise AssertionError("shadow property getter executed")
+
+
+class _ClassMemberShadowAttention(_ToyAttention):
+    to_v = None
+
+
 class _AdversarialSetterAttention(_ToyAttention):
     _armed: bool
     setter_calls: int
@@ -130,6 +154,14 @@ class _ToyBlock(nn.Module):
         self.ff = nn.Linear(width, width, device=device, dtype=dtype)
 
 
+class _NonDataShadowBlock(_ToyBlock):
+    attn1 = _ExplodingNonDataDescriptor()
+
+    def __init__(self, width: int) -> None:
+        object.__setattr__(self, "_shadow_getter_calls", 0)
+        super().__init__(width)
+
+
 class _ToyTransformer(nn.Module):
     def __init__(
         self,
@@ -147,6 +179,18 @@ class _ToyTransformer(nn.Module):
             ]
         )
         self.final = nn.Linear(width, width, device=device, dtype=dtype)
+
+
+class _PropertyShadowTransformer(_ToyTransformer):
+    def __init__(self, blocks: int = 2, width: int = 8) -> None:
+        object.__setattr__(self, "_shadow_getter_calls", 0)
+        super().__init__(blocks=blocks, width=width)
+
+    @property
+    def transformer_blocks(self) -> nn.ModuleList:
+        state = object.__getattribute__(self, "__dict__")
+        state["_shadow_getter_calls"] += 1
+        raise AssertionError("shadow property getter executed")
 
 
 def _toy(
@@ -216,6 +260,41 @@ def _assert_snapshot(transformer: nn.Module, expected: dict[str, object]) -> Non
             assert actual_value == expected_value
 
 
+def _assert_shadow_rejected_before_construction(
+    transformer: nn.Module,
+    *,
+    shadow_owner: nn.Module,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before = _snapshot(transformer)
+    rng_before = torch.random.get_rng_state().clone()
+    original = sana_layout_module.DynamicAtomLinear
+    constructor_calls = 0
+
+    def track_constructor(
+        base: nn.Linear, *, rank: int, atom_count: int
+    ) -> DynamicAtomLinear:
+        nonlocal constructor_calls
+        constructor_calls += 1
+        return original(base, rank=rank, atom_count=atom_count)
+
+    monkeypatch.setattr(
+        sana_layout_module, "DynamicAtomLinear", track_constructor
+    )
+
+    with pytest.raises(ValueError, match="shadow"):
+        install_sana_dynamic_atoms(
+            transformer, rank=2, atom_count=4, expected_blocks=2
+        )
+
+    assert constructor_calls == 0
+    assert torch.equal(torch.random.get_rng_state(), rng_before)
+    _assert_snapshot(transformer, before)
+    assert object.__getattribute__(shadow_owner, "__dict__").get(
+        "_shadow_getter_calls", 0
+    ) == 0
+
+
 def test_production_layout_order_formula_and_config_constants_are_canonical() -> None:
     layout = SanaAdapterLayout(
         num_blocks=PRODUCTION_BLOCK_COUNT,
@@ -279,6 +358,115 @@ def test_parameter_formula_requires_exact_positive_integers(
         SanaAdapterLayout(2, 4).trainable_parameter_count(**arguments)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    "segment",
+    ["transformer_blocks", "block_index", "attention", "target"],
+)
+def test_install_rejects_instance_shadow_at_every_canonical_path_segment(
+    segment: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transformer = _toy()
+    root_modules = object.__getattribute__(transformer, "_modules")
+    blocks = root_modules["transformer_blocks"]
+    assert isinstance(blocks, nn.ModuleList)
+    block_modules = object.__getattribute__(blocks, "_modules")
+    block = block_modules["0"]
+    attention_modules = object.__getattribute__(block, "_modules")
+    attention = attention_modules["attn1"]
+    target_modules = object.__getattribute__(attention, "_modules")
+
+    if segment == "transformer_blocks":
+        shadow_owner, attribute, value = (
+            transformer,
+            "transformer_blocks",
+            blocks,
+        )
+    elif segment == "block_index":
+        shadow_owner, attribute, value = blocks, "0", block
+    elif segment == "attention":
+        shadow_owner, attribute, value = block, "attn1", attention
+    else:
+        shadow_owner, attribute, value = attention, "to_q", target_modules["to_q"]
+    object.__setattr__(shadow_owner, attribute, value)
+
+    _assert_shadow_rejected_before_construction(
+        transformer,
+        shadow_owner=shadow_owner,
+        monkeypatch=monkeypatch,
+    )
+    assert object.__getattribute__(shadow_owner, "__dict__")[attribute] is value
+
+
+@pytest.mark.parametrize(
+    "segment", ["transformer_blocks", "attention", "target", "class_member"]
+)
+def test_install_rejects_class_descriptor_shadow_without_executing_getter(
+    segment: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if segment == "transformer_blocks":
+        transformer: nn.Module = _PropertyShadowTransformer()
+        shadow_owner = transformer
+    else:
+        transformer = _ToyTransformer()
+        root_modules = object.__getattribute__(transformer, "_modules")
+        blocks = root_modules["transformer_blocks"]
+        block_modules = object.__getattribute__(blocks, "_modules")
+        if segment == "attention":
+            shadow_owner = _NonDataShadowBlock(8)
+            block_modules["0"] = shadow_owner
+        elif segment == "target":
+            block = block_modules["0"]
+            block_registry = object.__getattribute__(block, "_modules")
+            shadow_owner = _PropertyShadowAttention(8, bias=False)
+            block_registry["attn1"] = shadow_owner
+        else:
+            block = block_modules["0"]
+            block_registry = object.__getattribute__(block, "_modules")
+            shadow_owner = _ClassMemberShadowAttention(8, bias=False)
+            block_registry["attn1"] = shadow_owner
+    transformer.requires_grad_(False)
+    transformer.eval()
+
+    _assert_shadow_rejected_before_construction(
+        transformer,
+        shadow_owner=shadow_owner,
+        monkeypatch=monkeypatch,
+    )
+
+
+@pytest.mark.parametrize("registry_name", ["_parameters", "_buffers"])
+@pytest.mark.parametrize("segment", ["transformer_blocks", "attention", "target"])
+def test_install_rejects_parameter_or_buffer_conflict_with_canonical_module(
+    segment: str,
+    registry_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transformer = _toy()
+    root_modules = object.__getattribute__(transformer, "_modules")
+    blocks = root_modules["transformer_blocks"]
+    block = object.__getattribute__(blocks, "_modules")["0"]
+    attention = object.__getattribute__(block, "_modules")["attn1"]
+    if segment == "transformer_blocks":
+        owner, attribute = transformer, "transformer_blocks"
+    elif segment == "attention":
+        owner, attribute = block, "attn1"
+    else:
+        owner, attribute = attention, "to_q"
+    registry = object.__getattribute__(owner, registry_name)
+    if registry_name == "_parameters":
+        registry[attribute] = nn.Parameter(torch.zeros(1), requires_grad=False)
+    else:
+        registry[attribute] = torch.zeros(1)
+
+    _assert_shadow_rejected_before_construction(
+        transformer,
+        shadow_owner=owner,
+        monkeypatch=monkeypatch,
+    )
+
+
 def test_install_is_transactional_for_a_missing_or_wrong_last_target() -> None:
     for replacement in (None, nn.Identity()):
         transformer = _toy()
@@ -334,13 +522,15 @@ def test_direct_commit_failure_after_current_write_rolls_back_every_target(
 
     def fail_after_write(
         owner: nn.Module,
+        registry: dict[str, nn.Module | None],
         attribute: str,
         expected: nn.Module,
         replacement: nn.Module,
     ) -> None:
         nonlocal calls
-        assert owner._modules.get(attribute) is expected
-        owner._modules[attribute] = replacement
+        assert object.__getattribute__(owner, "_modules") is registry
+        assert registry.get(attribute) is expected
+        registry[attribute] = replacement
         calls += 1
         if calls == 6:
             raise RuntimeError("commit sentinel")
@@ -358,6 +548,78 @@ def test_direct_commit_failure_after_current_write_rolls_back_every_target(
         )
 
     assert calls == 6
+    _assert_snapshot(transformer, before)
+
+
+def test_commit_registry_swap_and_current_write_are_fully_rolled_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transformer = _toy()
+    before = _snapshot(transformer)
+    original_commit = sana_layout_module._commit_target_module
+    calls = 0
+    fault_owner: nn.Module | None = None
+    captured_registry: dict[str, nn.Module | None] | None = None
+    escaped_registry: dict[str, nn.Module | None] | None = None
+    fault_attribute = ""
+    expected_base: nn.Module | None = None
+    expected_owner_targets: dict[str, nn.Module | None] = {}
+
+    def swap_registry_then_fail(
+        owner: nn.Module,
+        registry: dict[str, nn.Module | None],
+        attribute: str,
+        expected: nn.Module,
+        replacement: nn.Module,
+    ) -> None:
+        nonlocal calls
+        nonlocal fault_owner, captured_registry, escaped_registry
+        nonlocal fault_attribute, expected_base
+        calls += 1
+        if calls != 6:
+            original_commit(owner, registry, attribute, expected, replacement)
+            return
+        fault_owner = owner
+        captured_registry = registry
+        fault_attribute = attribute
+        expected_base = expected
+        expected_owner_targets.update(
+            {
+                name: value.base
+                if isinstance(value, DynamicAtomLinear)
+                else value
+                for name, value in registry.items()
+                if name in TARGET_MODULES
+            }
+        )
+        escaped_registry = registry.copy()
+        object.__getattribute__(owner, "__dict__")["_modules"] = escaped_registry
+        escaped_registry[attribute] = replacement
+        raise RuntimeError("registry swap sentinel")
+
+    monkeypatch.setattr(
+        sana_layout_module,
+        "_commit_target_module",
+        swap_registry_then_fail,
+    )
+
+    with pytest.raises(RuntimeError, match="registry swap sentinel"):
+        install_sana_dynamic_atoms(
+            transformer, rank=2, atom_count=4, expected_blocks=2
+        )
+
+    assert calls == 6
+    assert fault_owner is not None
+    assert captured_registry is not None
+    assert escaped_registry is not None
+    assert object.__getattribute__(fault_owner, "_modules") is captured_registry
+    assert captured_registry[fault_attribute] is expected_base
+    assert escaped_registry[fault_attribute] is expected_base
+    assert all(
+        captured_registry[name] is expected
+        and escaped_registry[name] is expected
+        for name, expected in expected_owner_targets.items()
+    )
     _assert_snapshot(transformer, before)
 
 
@@ -820,11 +1082,24 @@ def test_bank_does_not_keep_transformer_owner_or_wrapper_alive() -> None:
 )
 @pytest.mark.parametrize(
     "drift",
-    ["target-replaced", "qk-swapped", "attentions-swapped", "blocks-swapped"],
+    [
+        "target-replaced",
+        "qk-swapped",
+        "attentions-swapped",
+        "blocks-swapped",
+        "target-shadow",
+        "attention-shadow",
+        "block-index-shadow",
+        "blocks-shadow",
+        "target-parameter-shadow",
+        "target-buffer-shadow",
+        "target-class-shadow",
+    ],
 )
 def test_bank_entrypoints_fail_closed_after_canonical_path_drift(
     entrypoint: str,
     drift: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     transformer = _toy()
     bank = install_sana_dynamic_atoms(
@@ -849,11 +1124,35 @@ def test_bank_entrypoints_fail_closed_after_canonical_path_drift(
             second_block._modules["attn1"],
             first_block._modules["attn1"],
         )
-    else:
+    elif drift == "blocks-swapped":
         blocks = transformer.transformer_blocks
         blocks._modules["0"], blocks._modules["1"] = (
             blocks._modules["1"],
             blocks._modules["0"],
+        )
+    elif drift == "target-shadow":
+        object.__setattr__(first_owner, "to_q", original_wrappers[0])
+    elif drift == "attention-shadow":
+        first_block = transformer.transformer_blocks[0]
+        object.__setattr__(first_block, "attn1", first_owner)
+    elif drift == "block-index-shadow":
+        blocks = transformer.transformer_blocks
+        object.__setattr__(blocks, "0", blocks[0])
+    elif drift == "blocks-shadow":
+        blocks = transformer.transformer_blocks
+        object.__setattr__(transformer, "transformer_blocks", blocks)
+    elif drift == "target-parameter-shadow":
+        object.__getattribute__(first_owner, "_parameters")["to_q"] = nn.Parameter(
+            torch.zeros(1), requires_grad=False
+        )
+    elif drift == "target-buffer-shadow":
+        object.__getattribute__(first_owner, "_buffers")["to_q"] = torch.zeros(1)
+    else:
+        monkeypatch.setattr(
+            type(first_owner),
+            "to_q",
+            _ExplodingNonDataDescriptor(),
+            raising=False,
         )
 
     def invoke() -> None:
