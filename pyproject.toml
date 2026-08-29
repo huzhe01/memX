@@ -50,9 +50,9 @@ packages = ["src/ratemem"]
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
 markers = [
-  "cuda: requires a CUDA-capable GPU",
-  "real_sana: requires the real SANA model",
-  "paid_modal: invokes paid Modal infrastructure",
+  "cuda: requires a CUDA device",
+  "real_sana: downloads and loads the pinned SANA checkpoint",
+  "paid_modal: runs only inside the authorized Modal pilot",
 ]
 testpaths = ["tests"]
 
