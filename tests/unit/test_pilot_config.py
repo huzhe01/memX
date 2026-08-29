@@ -150,6 +150,20 @@ def test_committed_config_is_exact_immutable_and_has_all_derived_dimensions() ->
     assert config.num_train_timesteps == 1000
     assert config.flow_shift == 1.0
     assert config.use_dynamic_shifting is False
+    assert config.optimizer_class == "AdamW"
+    assert config.optimizer_kwargs == {
+        "lr": 0.001,
+        "betas": (0.9, 0.999),
+        "eps": 1e-8,
+        "weight_decay": 0.0,
+        "amsgrad": False,
+        "maximize": False,
+        "foreach": False,
+        "capturable": False,
+        "differentiable": False,
+        "fused": False,
+        "decoupled_weight_decay": True,
+    }
     assert config.code_shape == (20, 2, 3, 4)
     assert config.projection_count == 120
     assert config.code_dim == 480

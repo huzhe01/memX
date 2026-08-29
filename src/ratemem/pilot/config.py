@@ -13,6 +13,25 @@ from ratemem.adapters.sana_layout import (
     SanaAdapterLayout,
 )
 
+PILOT_OPTIMIZER_CLASS = "AdamW"
+
+
+def pilot_adamw_kwargs() -> dict[str, object]:
+    """Return a fresh exact optimizer contract for construction boundaries."""
+    return {
+        "lr": 0.001,
+        "betas": (0.9, 0.999),
+        "eps": 1e-8,
+        "weight_decay": 0.0,
+        "amsgrad": False,
+        "maximize": False,
+        "foreach": False,
+        "capturable": False,
+        "differentiable": False,
+        "fused": False,
+        "decoupled_weight_decay": True,
+    }
+
 
 def _canonical_payload() -> dict[str, object]:
     return {
@@ -47,6 +66,20 @@ def _canonical_payload() -> dict[str, object]:
         },
         "training": {
             "scheduler_class": "FlowMatchEulerDiscreteScheduler",
+            "optimizer": {
+                "class": "AdamW",
+                "lr": 0.001,
+                "betas": [0.9, 0.999],
+                "eps": 1e-8,
+                "weight_decay": 0.0,
+                "amsgrad": False,
+                "maximize": False,
+                "foreach": False,
+                "capturable": False,
+                "differentiable": False,
+                "fused": False,
+                "decoupled_weight_decay": True,
+            },
             "num_train_timesteps": 1000,
             "flow_shift": 1.0,
             "use_dynamic_shifting": False,
@@ -199,6 +232,18 @@ class SanaPilotConfig:
     atom_tensor_count: int
     atom_parameter_count: int
     scheduler_class: str
+    optimizer_class: str
+    optimizer_lr: float
+    optimizer_betas: tuple[float, float]
+    optimizer_eps: float
+    optimizer_weight_decay: float
+    optimizer_amsgrad: bool
+    optimizer_maximize: bool
+    optimizer_foreach: bool
+    optimizer_capturable: bool
+    optimizer_differentiable: bool
+    optimizer_fused: bool
+    optimizer_decoupled_weight_decay: bool
     num_train_timesteps: int
     flow_shift: float
     use_dynamic_shifting: bool
@@ -220,6 +265,25 @@ class SanaPilotConfig:
             len(self.target_modules),
             self.atom_count,
         )
+
+    @property
+    def optimizer_kwargs(self) -> dict[str, object]:
+        configured = {
+            "lr": self.optimizer_lr,
+            "betas": self.optimizer_betas,
+            "eps": self.optimizer_eps,
+            "weight_decay": self.optimizer_weight_decay,
+            "amsgrad": self.optimizer_amsgrad,
+            "maximize": self.optimizer_maximize,
+            "foreach": self.optimizer_foreach,
+            "capturable": self.optimizer_capturable,
+            "differentiable": self.optimizer_differentiable,
+            "fused": self.optimizer_fused,
+            "decoupled_weight_decay": self.optimizer_decoupled_weight_decay,
+        }
+        if self.optimizer_class != PILOT_OPTIMIZER_CLASS or configured != pilot_adamw_kwargs():
+            raise RuntimeError("config optimizer diverged from the runtime pilot contract")
+        return configured
 
     def validate(self) -> None:
         if type(self) is not SanaPilotConfig:
@@ -266,6 +330,20 @@ class SanaPilotConfig:
             },
             "training": {
                 "scheduler_class": self.scheduler_class,
+                "optimizer": {
+                    "class": self.optimizer_class,
+                    "lr": self.optimizer_lr,
+                    "betas": list(self.optimizer_betas),
+                    "eps": self.optimizer_eps,
+                    "weight_decay": self.optimizer_weight_decay,
+                    "amsgrad": self.optimizer_amsgrad,
+                    "maximize": self.optimizer_maximize,
+                    "foreach": self.optimizer_foreach,
+                    "capturable": self.optimizer_capturable,
+                    "differentiable": self.optimizer_differentiable,
+                    "fused": self.optimizer_fused,
+                    "decoupled_weight_decay": self.optimizer_decoupled_weight_decay,
+                },
                 "num_train_timesteps": self.num_train_timesteps,
                 "flow_shift": self.flow_shift,
                 "use_dynamic_shifting": self.use_dynamic_shifting,
@@ -293,6 +371,7 @@ class SanaPilotConfig:
         support = cast(dict[str, object], payload["support_encoder"])
         adapter = cast(dict[str, object], payload["adapter"])
         training = cast(dict[str, object], payload["training"])
+        optimizer = cast(dict[str, object], training["optimizer"])
 
         return cls(
             schema_version=cast(str, payload["schema_version"]),
@@ -319,6 +398,23 @@ class SanaPilotConfig:
             atom_tensor_count=cast(int, adapter["atom_tensor_count"]),
             atom_parameter_count=cast(int, adapter["atom_parameter_count"]),
             scheduler_class=cast(str, training["scheduler_class"]),
+            optimizer_class=cast(str, optimizer["class"]),
+            optimizer_lr=cast(float, optimizer["lr"]),
+            optimizer_betas=(
+                cast(list[float], optimizer["betas"])[0],
+                cast(list[float], optimizer["betas"])[1],
+            ),
+            optimizer_eps=cast(float, optimizer["eps"]),
+            optimizer_weight_decay=cast(float, optimizer["weight_decay"]),
+            optimizer_amsgrad=cast(bool, optimizer["amsgrad"]),
+            optimizer_maximize=cast(bool, optimizer["maximize"]),
+            optimizer_foreach=cast(bool, optimizer["foreach"]),
+            optimizer_capturable=cast(bool, optimizer["capturable"]),
+            optimizer_differentiable=cast(bool, optimizer["differentiable"]),
+            optimizer_fused=cast(bool, optimizer["fused"]),
+            optimizer_decoupled_weight_decay=cast(
+                bool, optimizer["decoupled_weight_decay"]
+            ),
             num_train_timesteps=cast(int, training["num_train_timesteps"]),
             flow_shift=cast(float, training["flow_shift"]),
             use_dynamic_shifting=cast(bool, training["use_dynamic_shifting"]),

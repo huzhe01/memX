@@ -37,6 +37,20 @@
   },
   "training": {
     "scheduler_class": "FlowMatchEulerDiscreteScheduler",
+    "optimizer": {
+      "class": "AdamW",
+      "lr": 0.001,
+      "betas": [0.9, 0.999],
+      "eps": 1e-8,
+      "weight_decay": 0.0,
+      "amsgrad": false,
+      "maximize": false,
+      "foreach": false,
+      "capturable": false,
+      "differentiable": false,
+      "fused": false,
+      "decoupled_weight_decay": true
+    },
     "num_train_timesteps": 1000,
     "flow_shift": 1.0,
     "use_dynamic_shifting": false,

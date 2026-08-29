@@ -1495,12 +1495,29 @@ git commit -m "feat: add pinned held-in pilot data loader"
 
 ### Task 7: Implement one-random-timestep flow training with one transformer pass
 
+> **Implementation reconciliation (complete):** The executable contract is
+> intentionally stronger than the illustrative snippets below.  The trainer
+> now consumes the exact Task 4 schedule and the canonical, serialized AdamW
+> configuration; accepts only an empty-state optimizer with the exact atom and
+> amortizer parameters; performs exactly one SANA call; and requires CPU FP32
+> or CUDA BF16 outputs.  Bounded, full-value SHA-256 inventories cover every
+> atom, amortizer tensor, frozen transformer parameter/buffer, optimizer tensor,
+> and global storage alias, so `.data` mutations and mutation during failed
+> train/evaluate calls cannot bypass the guard.  A detected mutation
+> permanently poisons the trainer.  The completed suite is 228 passed and one
+> explicit CUDA-only skip.  The deliberate cost of scanning the full frozen
+> 1.6B backbone remains a measured-pilot item rather than an unverified paper
+> efficiency claim.
+
 **Files:**
+- Modify: `configs/pilot/sana-1.5-1.6b.json`
+- Modify: `src/ratemem/pilot/config.py`
 - Create: `src/ratemem/sana/flow.py`
+- Modify: `tests/unit/test_pilot_config.py`
 - Create: `tests/unit/test_flow_matching.py`
 - Create: `tests/contract/test_flow_gradient_contract.py`
 
-- [ ] **Step 1: Write the flow interpolation/target and one-pass tests**
+- [x] **Step 1: Write the flow interpolation/target and one-pass tests**
 
 ```python
 # tests/unit/test_flow_matching.py
@@ -1595,13 +1612,13 @@ def test_train_step_uses_one_transformer_pass_and_preserves_backbone() -> None:
     assert any(parameter.grad is not None for parameter in amortizer.parameters())
 ```
 
-- [ ] **Step 2: Run the flow tests and observe the missing module**
+- [x] **Step 2: Run the flow tests and observe the missing module**
 
 Run: `uv run pytest tests/unit/test_flow_matching.py tests/contract/test_flow_gradient_contract.py -q`
 
 Expected: collection fails because `ratemem.sana.flow` does not exist.
 
-- [ ] **Step 3: Implement exact flow interpolation, timestep lookup, and frozen-version guard**
+- [x] **Step 3: Implement exact flow interpolation, timestep lookup, and frozen-version guard**
 
 ```python
 # src/ratemem/sana/flow.py
@@ -1758,13 +1775,13 @@ and loss accumulation FP32, and enable
 `transformer.enable_gradient_checkpointing()` before constructing the trainer.
 Never move `loss.backward()` outside `adapter_bank.activate(...)`.
 
-- [ ] **Step 4: Run the flow and gradient contracts**
+- [x] **Step 4: Run the flow and gradient contracts**
 
 Run: `uv run pytest tests/unit/test_flow_matching.py tests/contract/test_flow_gradient_contract.py -q`
 
 Expected: `3 passed`; the hook records exactly one transformer forward for one training query.
 
-- [ ] **Step 5: Commit the one-timestep trainer**
+- [x] **Step 5: Commit the one-timestep trainer**
 
 ```bash
 git add src/ratemem/sana/flow.py tests/unit/test_flow_matching.py tests/contract/test_flow_gradient_contract.py
