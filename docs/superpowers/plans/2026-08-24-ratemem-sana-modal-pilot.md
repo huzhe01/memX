@@ -1790,11 +1790,27 @@ git commit -m "feat: add one timestep sana flow trainer"
 
 ### Task 8: Save and reload only trainable atom and amortizer state
 
+> **Implementation reconciliation (complete):** The executable contract is
+> intentionally stronger than the illustrative snippets below.  Checkpoints
+> contain only exact dynamic-atom and amortizer tensors plus canonical metadata
+> bound to pinned model/support revisions, the installed layout, tensor specs,
+> and amortizer architecture.  Save is an owner-only, create-only single-file
+> transaction anchored to one `O_DIRECTORY|O_NOFOLLOW` parent descriptor; the
+> returned `CheckpointFileIdentity` is recomputed from the final published
+> inode.  Load inventories the complete transformer and all global storage
+> aliases, validates the entire file before mutation, and jointly commits Bank
+> and amortizer state while preserving parameter/storage/gradient identities.
+> A failed rollback persistently poisons either component across future
+> pairings.  The weakref registry cleans only its original record keys, so
+> Python object-ID reuse cannot clear an unrelated live poison.  Directory-wide
+> artifact publication remains Task 9's boundary.  The completed contract is
+> 71 passed, with an independent final review reporting no findings.
+
 **Files:**
 - Create: `src/ratemem/adapters/checkpoint.py`
 - Create: `tests/contract/test_trainable_checkpoint.py`
 
-- [ ] **Step 1: Write a save/load equivalence test**
+- [x] **Step 1: Write a save/load equivalence test**
 
 ```python
 # tests/contract/test_trainable_checkpoint.py
@@ -1861,13 +1877,13 @@ def test_trainable_checkpoint_excludes_backbone_and_restores_output(tmp_path: Pa
     assert all("base" not in key for key in metadata["tensor_keys"].split(","))
 ```
 
-- [ ] **Step 2: Run the checkpoint test and observe the missing module**
+- [x] **Step 2: Run the checkpoint test and observe the missing module**
 
 Run: `uv run pytest tests/contract/test_trainable_checkpoint.py -q`
 
 Expected: collection fails because `ratemem.adapters.checkpoint` does not exist.
 
-- [ ] **Step 3: Implement deterministic trainable-only safetensors serialization**
+- [x] **Step 3: Implement deterministic trainable-only safetensors serialization**
 
 ```python
 # src/ratemem/adapters/checkpoint.py
@@ -1954,13 +1970,13 @@ def load_trainable_checkpoint(
     return metadata
 ```
 
-- [ ] **Step 4: Run the save/load contract**
+- [x] **Step 4: Run the save/load contract**
 
 Run: `uv run pytest tests/contract/test_trainable_checkpoint.py -q`
 
 Expected: `1 passed`; the saved key list contains atom factors and amortizer weights only.
 
-- [ ] **Step 5: Commit trainable checkpoint interchange**
+- [x] **Step 5: Commit trainable checkpoint interchange**
 
 ```bash
 git add src/ratemem/adapters/checkpoint.py tests/contract/test_trainable_checkpoint.py
