@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0.0",
+  "scope": "engineering_pilot_only",
+  "publication_eligible": false,
+  "dataset": {
+    "dataset_id": "Yuanshi/Subjects200K",
+    "revision": "0d1cf6536239888f1a8e218790649344810067bc",
+    "config_name": "default",
+    "split": "train",
+    "source_file": "data/train-00000-of-00032.parquet",
+    "source_file_sha256": "3d696ccbdfc736961e75e5b7ce33adae40cd70ffb69cdc27020a25d643971903",
+    "streaming": true,
+    "row_indices": [0, 1, 2, 3, 4, 5, 6, 7],
+    "public": true,
+    "gated": false,
+    "license_spdx": "apache-2.0"
+  },
+  "semantics": {
+    "held_in": true,
+    "held_in_meaning": "public_train_rows_engineering_smoke_not_scientific_holdout",
+    "support_side": "left",
+    "query_side": "right",
+    "concept_field": "item",
+    "support_prompt_field": "description_0",
+    "query_prompt_field": "description_1"
+  },
+  "composite": {
+    "mode": "RGB",
+    "size": [1056, 528],
+    "image_size": 512,
+    "padding_pixels": 8,
+    "left_crop": [8, 8, 520, 520],
+    "right_crop": [528, 8, 1040, 520]
+  },
+  "feature_order": [
+    "image",
+    "collection",
+    "quality_assessment",
+    "description"
+  ],
+  "quality_field_order": [
+    "compositeStructure",
+    "objectConsistency",
+    "imageQuality"
+  ],
+  "description_field_order": [
+    "item",
+    "description_0",
+    "description_1",
+    "category",
+    "description_valid"
+  ]
+}

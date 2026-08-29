@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,75 @@ def _canonical_payload() -> dict[str, object]:
             "query_passes_per_step": 1,
         },
     }
+
+
+def _canonical_subjects_payload() -> dict[str, object]:
+    return {
+        "schema_version": "1.0.0",
+        "scope": "engineering_pilot_only",
+        "publication_eligible": False,
+        "dataset": {
+            "dataset_id": "Yuanshi/Subjects200K",
+            "revision": "0d1cf6536239888f1a8e218790649344810067bc",
+            "config_name": "default",
+            "split": "train",
+            "source_file": "data/train-00000-of-00032.parquet",
+            "source_file_sha256": (
+                "3d696ccbdfc736961e75e5b7ce33adae40cd70ffb69cdc27020a25d643971903"
+            ),
+            "streaming": True,
+            "row_indices": list(range(8)),
+            "public": True,
+            "gated": False,
+            "license_spdx": "apache-2.0",
+        },
+        "semantics": {
+            "held_in": True,
+            "held_in_meaning": (
+                "public_train_rows_engineering_smoke_not_scientific_holdout"
+            ),
+            "support_side": "left",
+            "query_side": "right",
+            "concept_field": "item",
+            "support_prompt_field": "description_0",
+            "query_prompt_field": "description_1",
+        },
+        "composite": {
+            "mode": "RGB",
+            "size": [1056, 528],
+            "image_size": 512,
+            "padding_pixels": 8,
+            "left_crop": [8, 8, 520, 520],
+            "right_crop": [528, 8, 1040, 520],
+        },
+        "feature_order": [
+            "image",
+            "collection",
+            "quality_assessment",
+            "description",
+        ],
+        "quality_field_order": [
+            "compositeStructure",
+            "objectConsistency",
+            "imageQuality",
+        ],
+        "description_field_order": [
+            "item",
+            "description_0",
+            "description_1",
+            "category",
+            "description_valid",
+        ],
+    }
+
+
+SUBJECTS_PILOT_CANONICAL_SHA256 = hashlib.sha256(
+    json.dumps(
+        _canonical_subjects_payload(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
 
 
 def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -291,3 +361,151 @@ class SanaPilotConfig:
         )
         if actual != expected or committed != expected:
             raise ValueError("derived adapter dimensions changed from the canonical contract")
+
+
+@dataclass(frozen=True, slots=True)
+class SubjectsPilotConfig:
+    schema_version: str
+    scope: str
+    publication_eligible: bool
+    dataset_id: str
+    revision: str
+    config_name: str
+    split: str
+    source_file: str
+    source_file_sha256: str
+    streaming: bool
+    row_indices: tuple[int, ...]
+    public: bool
+    gated: bool
+    license_spdx: str
+    held_in: bool
+    held_in_meaning: str
+    support_side: str
+    query_side: str
+    concept_field: str
+    support_prompt_field: str
+    query_prompt_field: str
+    mode: str
+    size: tuple[int, ...]
+    image_size: int
+    padding_pixels: int
+    left_crop: tuple[int, ...]
+    right_crop: tuple[int, ...]
+    feature_order: tuple[str, ...]
+    quality_field_order: tuple[str, ...]
+    description_field_order: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def _as_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "scope": self.scope,
+            "publication_eligible": self.publication_eligible,
+            "dataset": {
+                "dataset_id": self.dataset_id,
+                "revision": self.revision,
+                "config_name": self.config_name,
+                "split": self.split,
+                "source_file": self.source_file,
+                "source_file_sha256": self.source_file_sha256,
+                "streaming": self.streaming,
+                "row_indices": list(self.row_indices),
+                "public": self.public,
+                "gated": self.gated,
+                "license_spdx": self.license_spdx,
+            },
+            "semantics": {
+                "held_in": self.held_in,
+                "held_in_meaning": self.held_in_meaning,
+                "support_side": self.support_side,
+                "query_side": self.query_side,
+                "concept_field": self.concept_field,
+                "support_prompt_field": self.support_prompt_field,
+                "query_prompt_field": self.query_prompt_field,
+            },
+            "composite": {
+                "mode": self.mode,
+                "size": list(self.size),
+                "image_size": self.image_size,
+                "padding_pixels": self.padding_pixels,
+                "left_crop": list(self.left_crop),
+                "right_crop": list(self.right_crop),
+            },
+            "feature_order": list(self.feature_order),
+            "quality_field_order": list(self.quality_field_order),
+            "description_field_order": list(self.description_field_order),
+        }
+
+    def validate(self) -> None:
+        if type(self) is not SubjectsPilotConfig:
+            raise TypeError("config must be an exact SubjectsPilotConfig")
+        for name in (
+            "row_indices",
+            "size",
+            "left_crop",
+            "right_crop",
+            "feature_order",
+            "quality_field_order",
+            "description_field_order",
+        ):
+            if type(getattr(self, name)) is not tuple:
+                raise ValueError(f"config.{name} must have exact canonical type tuple")
+        _require_canonical_value(
+            self._as_payload(), _canonical_subjects_payload(), "subjects config"
+        )
+
+    @property
+    def canonical_sha256(self) -> str:
+        self.validate()
+        return SUBJECTS_PILOT_CANONICAL_SHA256
+
+    @classmethod
+    def load(cls, path: Path) -> SubjectsPilotConfig:
+        decoded = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_object_without_duplicates,
+            parse_constant=_reject_nonfinite_constant,
+        )
+        expected = _canonical_subjects_payload()
+        _require_canonical_value(decoded, expected, "subjects root")
+        payload = cast(dict[str, object], decoded)
+        dataset = cast(dict[str, object], payload["dataset"])
+        semantics = cast(dict[str, object], payload["semantics"])
+        composite = cast(dict[str, object], payload["composite"])
+        return cls(
+            schema_version=cast(str, payload["schema_version"]),
+            scope=cast(str, payload["scope"]),
+            publication_eligible=cast(bool, payload["publication_eligible"]),
+            dataset_id=cast(str, dataset["dataset_id"]),
+            revision=cast(str, dataset["revision"]),
+            config_name=cast(str, dataset["config_name"]),
+            split=cast(str, dataset["split"]),
+            source_file=cast(str, dataset["source_file"]),
+            source_file_sha256=cast(str, dataset["source_file_sha256"]),
+            streaming=cast(bool, dataset["streaming"]),
+            row_indices=tuple(cast(list[int], dataset["row_indices"])),
+            public=cast(bool, dataset["public"]),
+            gated=cast(bool, dataset["gated"]),
+            license_spdx=cast(str, dataset["license_spdx"]),
+            held_in=cast(bool, semantics["held_in"]),
+            held_in_meaning=cast(str, semantics["held_in_meaning"]),
+            support_side=cast(str, semantics["support_side"]),
+            query_side=cast(str, semantics["query_side"]),
+            concept_field=cast(str, semantics["concept_field"]),
+            support_prompt_field=cast(str, semantics["support_prompt_field"]),
+            query_prompt_field=cast(str, semantics["query_prompt_field"]),
+            mode=cast(str, composite["mode"]),
+            size=tuple(cast(list[int], composite["size"])),
+            image_size=cast(int, composite["image_size"]),
+            padding_pixels=cast(int, composite["padding_pixels"]),
+            left_crop=tuple(cast(list[int], composite["left_crop"])),
+            right_crop=tuple(cast(list[int], composite["right_crop"])),
+            feature_order=tuple(cast(list[str], payload["feature_order"])),
+            quality_field_order=tuple(cast(list[str], payload["quality_field_order"])),
+            description_field_order=tuple(
+                cast(list[str], payload["description_field_order"])
+            ),
+        )

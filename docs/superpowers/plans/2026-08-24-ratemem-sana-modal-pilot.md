@@ -1122,7 +1122,23 @@ git commit -m "feat: add permutation invariant support amortizer"
 - Create: `src/ratemem/pilot/data.py`
 - Create: `tests/unit/test_pilot_data.py`
 
-- [ ] **Step 1: Write composite-split, manifest, and held-in-only tests**
+> **Implementation reconciliation (complete):** The snippets below are the
+> original RED sketch; the executable 154-test Task 6 contract is normative.
+> The final implementation pins the exact Subjects200K revision, shard LFS
+> identity, schema order, rows 0--7, composite geometry, and official SANA/DINO
+> preprocessing. Production precompute/build entry points accept only an exact,
+> validated `PinnedComponents`; synthetic components are confined to private
+> test seams. A canonical config hash and an externally retained
+> `PilotCacheReceipt` bind the identity, canonical manifest bytes, and exact
+> safetensors bytes, so a coherently rewritten feature/manifest/marker bundle
+> cannot authenticate itself. Cache publication is owner-only, single-writer,
+> fsynced, and atomic with complete failure cleanup; thread and spawned-process
+> tests prove one compute winner. Real Subjects hydration and the complete
+> SANA/DINO precompute path are explicit opt-in integration contracts. These
+> eight public training rows are an engineering smoke set only: they are held-in,
+> publication-ineligible, and provide no scientific or CVPR claim evidence.
+
+- [x] **Step 1: Write composite-split, manifest, and held-in-only tests**
 
 ```python
 # tests/unit/test_pilot_data.py
@@ -1175,13 +1191,13 @@ def test_committed_dataset_config_is_engineering_only() -> None:
     assert config.publication_eligible is False
 ```
 
-- [ ] **Step 2: Run the data tests and observe missing configuration/data code**
+- [x] **Step 2: Run the data tests and observe missing configuration/data code**
 
 Run: `uv run pytest tests/unit/test_pilot_data.py -q`
 
 Expected: collection fails because `SubjectsPilotConfig` and `ratemem.pilot.data` do not exist.
 
-- [ ] **Step 3: Commit the exact held-in data selection**
+- [x] **Step 3: Commit the exact held-in data selection**
 
 ```json
 {
@@ -1199,7 +1215,7 @@ Expected: collection fails because `SubjectsPilotConfig` and `ratemem.pilot.data
 }
 ```
 
-- [ ] **Step 4: Add `SubjectsPilotConfig` to the central config module**
+- [x] **Step 4: Add `SubjectsPilotConfig` to the central config module**
 
 ```python
 # append to src/ratemem/pilot/config.py
@@ -1244,7 +1260,7 @@ class SubjectsPilotConfig:
         return config
 ```
 
-- [ ] **Step 5: Implement deterministic row extraction and a checksummed precompute cache**
+- [x] **Step 5: Implement deterministic row extraction and a checksummed precompute cache**
 
 ```python
 # src/ratemem/pilot/data.py (public contract and core extraction)
@@ -1460,13 +1476,13 @@ def precompute_examples(
 
 The training loop consumes only `PrecomputedPilotData.tensors`; it never receives a PIL image, VAE, text encoder, or DINO encoder after this function returns.
 
-- [ ] **Step 6: Run the deterministic data tests**
+- [x] **Step 6: Run the deterministic data tests**
 
 Run: `uv run pytest tests/unit/test_pilot_data.py -q`
 
 Expected: `4 passed`; no network access occurs because tests use synthetic images.
 
-- [ ] **Step 7: Commit the held-in pilot data path**
+- [x] **Step 7: Commit the held-in pilot data path**
 
 ```bash
 git add configs/pilot/subjects200k-held-in.json src/ratemem/pilot/config.py src/ratemem/pilot/data.py tests/unit/test_pilot_data.py
