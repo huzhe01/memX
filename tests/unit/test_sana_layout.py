@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import gc
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
+from weakref import ref
 
 import pytest
 import torch
@@ -53,25 +55,62 @@ class _ToyAttention(nn.Module):
         )
 
 
-class _CommitFailAttention(_ToyAttention):
-    _fail_on: str | None
+class _AdversarialSetterAttention(_ToyAttention):
+    _armed: bool
+    setter_calls: int
 
     def __init__(self, width: int, *, bias: bool) -> None:
-        object.__setattr__(self, "_fail_on", None)
+        object.__setattr__(self, "_armed", False)
+        object.__setattr__(self, "setter_calls", 0)
         super().__init__(width, bias=bias)
+        self.register_buffer("side_effect_buffer", torch.zeros(1))
 
-    def arm(self, name: str) -> None:
-        object.__setattr__(self, "_fail_on", name)
+    def arm(self) -> None:
+        object.__setattr__(self, "_armed", True)
 
     def __setattr__(self, name: str, value: object) -> None:
         if (
-            name == getattr(self, "_fail_on", None)
+            getattr(self, "_armed", False)
+            and name in TARGET_MODULES
             and isinstance(value, DynamicAtomLinear)
         ):
-            object.__setattr__(self, "_fail_on", None)
-            super().__setattr__(name, value)
-            raise RuntimeError("commit sentinel")
+            object.__setattr__(self, "setter_calls", self.setter_calls + 1)
+            with torch.no_grad():
+                self.to_out[0].weight.add_(100.0)
+                self.side_effect_buffer.add_(1.0)
+            self.train(True)
+            raise RuntimeError("adversarial setter ran")
         super().__setattr__(name, value)
+
+
+class _AdversarialGetterAttention(_ToyAttention):
+    _armed: bool
+    getter_calls: int
+
+    def __init__(self, width: int, *, bias: bool) -> None:
+        object.__setattr__(self, "_armed", False)
+        object.__setattr__(self, "getter_calls", 0)
+        super().__init__(width, bias=bias)
+        self.register_buffer("getter_probe", torch.zeros(1))
+
+    def arm(self) -> None:
+        object.__setattr__(self, "_armed", True)
+
+    def __getattribute__(self, name: str) -> Any:
+        if (
+            name in TARGET_MODULES
+            and object.__getattribute__(self, "_armed")
+        ):
+            object.__setattr__(
+                self,
+                "getter_calls",
+                object.__getattribute__(self, "getter_calls") + 1,
+            )
+            buffers = object.__getattribute__(self, "_buffers")
+            with torch.no_grad():
+                buffers["getter_probe"].add_(1.0)
+            self.train(True)
+        return super().__getattribute__(name)
 
 
 class _ToyBlock(nn.Module):
@@ -285,16 +324,123 @@ def test_nth_constructor_failure_leaves_the_transformer_bit_identical(
     _assert_snapshot(transformer, before)
 
 
-def test_commit_failure_rolls_back_every_committed_target() -> None:
+def test_direct_commit_failure_after_current_write_rolls_back_every_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     transformer = _toy()
-    failing = _CommitFailAttention(8, bias=True)
-    failing.requires_grad_(False)
-    failing.train(transformer.training)
-    transformer.transformer_blocks[-1].attn2 = failing
-    failing.arm("to_v")
     before = _snapshot(transformer)
+    calls = 0
+
+    def fail_after_write(
+        owner: nn.Module,
+        attribute: str,
+        expected: nn.Module,
+        replacement: nn.Module,
+    ) -> None:
+        nonlocal calls
+        assert owner._modules.get(attribute) is expected
+        owner._modules[attribute] = replacement
+        calls += 1
+        if calls == 6:
+            raise RuntimeError("commit sentinel")
+
+    monkeypatch.setattr(
+        sana_layout_module,
+        "_commit_target_module",
+        fail_after_write,
+        raising=False,
+    )
 
     with pytest.raises(RuntimeError, match="commit sentinel"):
+        install_sana_dynamic_atoms(
+            transformer, rank=2, atom_count=4, expected_blocks=2
+        )
+
+    assert calls == 6
+    _assert_snapshot(transformer, before)
+
+
+def test_install_never_invokes_an_adversarial_target_setter() -> None:
+    transformer = _toy()
+    attention = _AdversarialSetterAttention(8, bias=True)
+    attention.requires_grad_(False)
+    attention.eval()
+    transformer.transformer_blocks[-1].attn2 = attention
+    unrelated_weight = attention.to_out[0].weight.detach().clone()
+    unrelated_buffer = attention.side_effect_buffer.detach().clone()
+    attention.arm()
+
+    bank = install_sana_dynamic_atoms(
+        transformer, rank=2, atom_count=4, expected_blocks=2
+    )
+
+    assert len(bank.wrappers) == 12
+    assert attention.setter_calls == 0
+    assert torch.equal(attention.to_out[0].weight, unrelated_weight)
+    assert torch.equal(attention.side_effect_buffer, unrelated_buffer)
+    assert all(not module.training for module in transformer.modules())
+
+
+def test_inventory_never_invokes_an_adversarial_target_getter() -> None:
+    transformer = _toy()
+    attention = _AdversarialGetterAttention(8, bias=True)
+    attention.requires_grad_(False)
+    attention.eval()
+    transformer.transformer_blocks[-1]._modules["attn2"] = attention
+    probe_before = attention.getter_probe.detach().clone()
+    attention.arm()
+
+    bank = install_sana_dynamic_atoms(
+        transformer, rank=2, atom_count=4, expected_blocks=2
+    )
+
+    assert len(bank.wrappers) == 12
+    assert attention.getter_calls == 0
+    assert torch.equal(attention.getter_probe, probe_before)
+    assert all(not module.training for module in transformer.modules())
+
+
+def test_install_rejects_a_custom_target_module_registry_without_mutation() -> None:
+    class _CustomModuleRegistry(dict[str, nn.Module | None]):
+        pass
+
+    transformer = _toy()
+    attention = transformer.transformer_blocks[-1].attn2
+    attention._modules = _CustomModuleRegistry(attention._modules)
+    before = _snapshot(transformer)
+
+    with pytest.raises(TypeError, match="exact built-in dict"):
+        install_sana_dynamic_atoms(
+            transformer, rank=2, atom_count=4, expected_blocks=2
+        )
+
+    _assert_snapshot(transformer, before)
+
+
+@pytest.mark.parametrize(
+    "container",
+    ["root", "module-list", "block"],
+)
+def test_install_rejects_noncanonical_container_registration_without_mutation(
+    container: str,
+) -> None:
+    transformer = _toy()
+    blocks = transformer.transformer_blocks
+    if container == "root":
+        registered = transformer._modules.pop("transformer_blocks")
+        transformer._modules["noncanonical"] = registered
+        object.__setattr__(transformer, "transformer_blocks", registered)
+    elif container == "module-list":
+        registered = blocks._modules.pop("0")
+        blocks._modules["noncanonical"] = registered
+    else:
+        block = blocks[0]
+        registered = block._modules.pop("attn1")
+        block._modules["noncanonical"] = registered
+        object.__setattr__(block, "attn1", registered)
+    before = _snapshot(transformer)
+
+    with pytest.raises(TypeError, match="canonically registered"):
         install_sana_dynamic_atoms(
             transformer, rank=2, atom_count=4, expected_blocks=2
         )
@@ -567,6 +713,105 @@ def test_bank_is_non_owning_and_exposes_unique_canonical_trainables() -> None:
     )
 
 
+def test_bank_does_not_keep_transformer_owner_or_wrapper_alive() -> None:
+    def install() -> tuple[
+        SanaDynamicAdapterBank,
+        Any,
+        Any,
+        Any,
+    ]:
+        transformer = _toy()
+        bank = install_sana_dynamic_atoms(
+            transformer, rank=2, atom_count=4, expected_blocks=2
+        )
+        return (
+            bank,
+            ref(transformer),
+            ref(transformer.transformer_blocks[0].attn1),
+            ref(bank.wrappers[0]),
+        )
+
+    bank, transformer_ref, owner_ref, wrapper_ref = install()
+    gc.collect()
+
+    assert transformer_ref() is None
+    assert owner_ref() is None
+    assert wrapper_ref() is None
+    with pytest.raises(RuntimeError, match="released|canonical"):
+        _ = bank.wrappers
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    ["wrappers", "named_parameters", "parameters", "state_dict", "load", "activate"],
+)
+@pytest.mark.parametrize(
+    "drift",
+    ["target-replaced", "qk-swapped", "attentions-swapped", "blocks-swapped"],
+)
+def test_bank_entrypoints_fail_closed_after_canonical_path_drift(
+    entrypoint: str,
+    drift: str,
+) -> None:
+    transformer = _toy()
+    bank = install_sana_dynamic_atoms(
+        transformer, rank=2, atom_count=4, expected_blocks=2
+    )
+    original_wrappers = bank.wrappers
+    saved_state = OrderedDict(
+        (name, value.detach().clone()) for name, value in bank.state_dict().items()
+    )
+    first_owner = transformer.transformer_blocks[0].attn1
+    if drift == "target-replaced":
+        first_owner._modules["to_q"] = original_wrappers[0].base
+    elif drift == "qk-swapped":
+        first_owner._modules["to_q"], first_owner._modules["to_k"] = (
+            first_owner._modules["to_k"],
+            first_owner._modules["to_q"],
+        )
+    elif drift == "attentions-swapped":
+        first_block = transformer.transformer_blocks[0]
+        second_block = transformer.transformer_blocks[1]
+        first_block._modules["attn1"], second_block._modules["attn1"] = (
+            second_block._modules["attn1"],
+            first_block._modules["attn1"],
+        )
+    else:
+        blocks = transformer.transformer_blocks
+        blocks._modules["0"], blocks._modules["1"] = (
+            blocks._modules["1"],
+            blocks._modules["0"],
+        )
+
+    def invoke() -> None:
+        if entrypoint == "wrappers":
+            _ = bank.wrappers
+        elif entrypoint == "named_parameters":
+            list(bank.named_parameters())
+        elif entrypoint == "parameters":
+            list(bank.parameters())
+        elif entrypoint == "state_dict":
+            bank.state_dict()
+        elif entrypoint == "load":
+            bank.load_state_dict(saved_state, strict=True)
+        else:
+            with bank.activate(torch.zeros(bank.layout.code_dim)):
+                raise AssertionError("drifted bank became active")
+
+    with pytest.raises(RuntimeError, match="canonical"):
+        invoke()
+
+    assert all(
+        (
+            wrapper._coefficients,
+            wrapper._activation_token,
+            wrapper._coefficient_version,
+        )
+        == (None, None, None)
+        for wrapper in original_wrappers
+    )
+
+
 @pytest.mark.parametrize("batch", [None, 3])
 def test_activation_maps_flat_arange_codes_exhaustively_and_preserves_gradients(
     batch: int | None,
@@ -662,13 +907,22 @@ def test_body_exception_and_partial_enter_failure_both_rollback_activation(
 
     external = torch.full((bank.layout.atom_count,), 7.0)
     with bank.wrappers[5].use_coefficients(external):
+        external_state = (
+            bank.wrappers[5]._coefficients,
+            bank.wrappers[5]._activation_token,
+            bank.wrappers[5]._coefficient_version,
+        )
         with pytest.raises(RuntimeError, match="already active"):
             with bank.activate(code):
                 raise AssertionError("externally occupied activation entered")
         assert all(
             wrapper._coefficients is None for wrapper in bank.wrappers[:5]
         )
-        assert bank.wrappers[5]._coefficients is external
+        assert (
+            bank.wrappers[5]._coefficients,
+            bank.wrappers[5]._activation_token,
+            bank.wrappers[5]._coefficient_version,
+        ) == external_state
         assert all(
             wrapper._coefficients is None for wrapper in bank.wrappers[6:]
         )
@@ -684,6 +938,393 @@ def test_body_exception_and_partial_enter_failure_both_rollback_activation(
         with bank.activate(code):
             raise AssertionError("partial activation entered")
     assert all(wrapper._coefficients is None for wrapper in bank.wrappers)
+
+
+def test_mutate_then_raise_during_enter_restores_exact_transient_state_and_reuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transformer = _toy()
+    bank = install_sana_dynamic_atoms(
+        transformer, rank=2, atom_count=4, expected_blocks=2
+    )
+    code = torch.zeros(bank.layout.code_dim)
+    failing_wrapper = bank.wrappers[5]
+    original_use_coefficients = failing_wrapper.use_coefficients
+
+    @contextmanager
+    def mutate_then_fail(coefficients: torch.Tensor) -> Any:
+        object.__setattr__(failing_wrapper, "_coefficients", coefficients)
+        object.__setattr__(failing_wrapper, "_activation_token", object())
+        object.__setattr__(failing_wrapper, "_coefficient_version", 73)
+        raise RuntimeError("mutate-then-enter sentinel")
+        yield
+
+    monkeypatch.setattr(
+        failing_wrapper, "use_coefficients", mutate_then_fail
+    )
+    with pytest.raises(RuntimeError, match="mutate-then-enter sentinel"):
+        with bank.activate(code):
+            raise AssertionError("partial activation entered")
+
+    assert all(
+        (
+            wrapper._coefficients,
+            wrapper._activation_token,
+            wrapper._coefficient_version,
+        )
+        == (None, None, None)
+        for wrapper in bank.wrappers
+    )
+
+    monkeypatch.setattr(
+        failing_wrapper, "use_coefficients", original_use_coefficients
+    )
+    with bank.activate(code):
+        assert all(wrapper._coefficients is not None for wrapper in bank.wrappers)
+    assert all(wrapper._coefficients is None for wrapper in bank.wrappers)
+
+
+@pytest.mark.parametrize("corruption", ["coefficient-version", "activation-token"])
+def test_activation_fails_closed_instead_of_hiding_body_corruption(
+    corruption: str,
+) -> None:
+    transformer = _toy()
+    bank = install_sana_dynamic_atoms(
+        transformer, rank=2, atom_count=4, expected_blocks=2
+    )
+    code = torch.zeros(bank.layout.code_dim)
+
+    with pytest.raises(RuntimeError, match="modified|activation state"):
+        with bank.activate(code):
+            if corruption == "coefficient-version":
+                code.add_(1.0)
+            else:
+                object.__setattr__(
+                    bank.wrappers[5], "_activation_token", object()
+                )
+
+    assert all(
+        (
+            wrapper._coefficients,
+            wrapper._activation_token,
+            wrapper._coefficient_version,
+        )
+        == (None, None, None)
+        for wrapper in bank.wrappers
+    )
+    with bank.activate(torch.zeros_like(code)):
+        assert all(wrapper._coefficients is not None for wrapper in bank.wrappers)
+
+
+def test_activation_validates_each_successful_enter_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transformer = _toy()
+    bank = install_sana_dynamic_atoms(
+        transformer, rank=2, atom_count=4, expected_blocks=2
+    )
+    code = torch.zeros(bank.layout.code_dim)
+    failing_wrapper = bank.wrappers[2]
+    original_use_coefficients = failing_wrapper.use_coefficients
+
+    @contextmanager
+    def yield_without_activation(_coefficients: torch.Tensor) -> Any:
+        yield
+
+    monkeypatch.setattr(
+        failing_wrapper,
+        "use_coefficients",
+        yield_without_activation,
+    )
+    with pytest.raises(RuntimeError, match="failed to activate"):
+        with bank.activate(code):
+            raise AssertionError("invalid enter reached the body")
+
+    assert all(
+        (
+            wrapper._coefficients,
+            wrapper._activation_token,
+            wrapper._coefficient_version,
+        )
+        == (None, None, None)
+        for wrapper in bank.wrappers
+    )
+    monkeypatch.setattr(
+        failing_wrapper, "use_coefficients", original_use_coefficients
+    )
+    with bank.activate(code):
+        assert all(wrapper._coefficients is not None for wrapper in bank.wrappers)
+
+
+def test_activation_rejects_a_forged_untracked_version_in_no_grad(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transformer = _toy()
+    bank = install_sana_dynamic_atoms(
+        transformer, rank=2, atom_count=4, expected_blocks=2
+    )
+    code = torch.zeros(bank.layout.code_dim)
+    failing_wrapper = bank.wrappers[2]
+
+    @contextmanager
+    def forge_version(coefficients: torch.Tensor) -> Any:
+        object.__setattr__(failing_wrapper, "_coefficients", coefficients)
+        object.__setattr__(failing_wrapper, "_activation_token", object())
+        object.__setattr__(failing_wrapper, "_coefficient_version", -1)
+        try:
+            yield
+        finally:
+            object.__setattr__(failing_wrapper, "_coefficients", None)
+            object.__setattr__(failing_wrapper, "_activation_token", None)
+            object.__setattr__(failing_wrapper, "_coefficient_version", None)
+
+    monkeypatch.setattr(failing_wrapper, "use_coefficients", forge_version)
+    with torch.no_grad(), pytest.raises(RuntimeError, match="version"):
+        with bank.activate(code):
+            raise AssertionError("forged version reached the body")
+
+    assert all(
+        (
+            wrapper._coefficients,
+            wrapper._activation_token,
+            wrapper._coefficient_version,
+        )
+        == (None, None, None)
+        for wrapper in bank.wrappers
+    )
+
+
+def test_activation_restores_transients_when_successful_context_exit_poisons(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transformer = _toy()
+    bank = install_sana_dynamic_atoms(
+        transformer, rank=2, atom_count=4, expected_blocks=2
+    )
+    code = torch.zeros(bank.layout.code_dim)
+    failing_wrapper = bank.wrappers[2]
+    original_use_coefficients = failing_wrapper.use_coefficients
+
+    @contextmanager
+    def poison_then_fail(coefficients: torch.Tensor) -> Any:
+        with original_use_coefficients(coefficients):
+            yield
+        object.__setattr__(failing_wrapper, "_coefficients", coefficients)
+        object.__setattr__(failing_wrapper, "_activation_token", object())
+        object.__setattr__(failing_wrapper, "_coefficient_version", 123)
+        raise RuntimeError("exit poison sentinel")
+
+    monkeypatch.setattr(
+        failing_wrapper,
+        "use_coefficients",
+        poison_then_fail,
+    )
+    with pytest.raises(RuntimeError, match="exit poison sentinel"):
+        with bank.activate(code):
+            pass
+
+    assert all(
+        (
+            wrapper._coefficients,
+            wrapper._activation_token,
+            wrapper._coefficient_version,
+        )
+        == (None, None, None)
+        for wrapper in bank.wrappers
+    )
+    monkeypatch.setattr(
+        failing_wrapper, "use_coefficients", original_use_coefficients
+    )
+    with bank.activate(code):
+        assert all(wrapper._coefficients is not None for wrapper in bank.wrappers)
+
+
+def test_body_exception_cannot_hide_in_place_coefficient_corruption() -> None:
+    transformer = _toy()
+    bank = install_sana_dynamic_atoms(
+        transformer, rank=2, atom_count=4, expected_blocks=2
+    )
+    code = torch.zeros(bank.layout.code_dim)
+
+    with pytest.raises(RuntimeError, match="modified") as raised:
+        with bank.activate(code):
+            code.add_(1.0)
+            raise ValueError("body sentinel")
+
+    assert isinstance(raised.value.__context__, ValueError)
+    assert all(
+        (
+            wrapper._coefficients,
+            wrapper._activation_token,
+            wrapper._coefficient_version,
+        )
+        == (None, None, None)
+        for wrapper in bank.wrappers
+    )
+
+
+def test_state_load_stages_aliasing_values_before_an_exact_swap() -> None:
+    transformer = _toy()
+    bank = install_sana_dynamic_atoms(
+        transformer, rank=2, atom_count=4, expected_blocks=2
+    )
+    named = list(bank.named_parameters())
+    (first_name, first), (second_name, second) = named[0], named[2]
+    assert first.shape == second.shape
+    with torch.no_grad():
+        first.fill_(1.0)
+        second.fill_(2.0)
+
+    result = bank.load_state_dict(
+        OrderedDict(
+            (
+                (first_name, second.detach()),
+                (second_name, first.detach()),
+            )
+        ),
+        strict=False,
+    )
+
+    assert first_name not in result.missing_keys
+    assert second_name not in result.missing_keys
+    assert torch.equal(first, torch.full_like(first, 2.0))
+    assert torch.equal(second, torch.full_like(second, 1.0))
+
+
+def test_state_load_casts_independent_sources_to_target_placement_without_grad() -> None:
+    transformer = _toy()
+    bank = install_sana_dynamic_atoms(
+        transformer, rank=2, atom_count=4, expected_blocks=2
+    )
+    name, parameter = next(bank.named_parameters())
+    source = torch.full(
+        parameter.shape,
+        3.25,
+        dtype=torch.float64,
+        requires_grad=True,
+    )
+
+    bank.load_state_dict({name: source}, strict=False)
+
+    assert parameter.is_leaf
+    assert parameter.requires_grad
+    assert parameter.device.type == "cpu"
+    assert parameter.dtype == torch.float32
+    assert torch.equal(parameter, torch.full_like(parameter, 3.25))
+    assert source.dtype == torch.float64
+    assert source.requires_grad
+    assert source.grad is None
+
+
+def test_later_unmaterialized_state_value_fails_before_any_target_mutation() -> None:
+    transformer = _toy()
+    bank = install_sana_dynamic_atoms(
+        transformer, rank=2, atom_count=4, expected_blocks=2
+    )
+    named = list(bank.named_parameters())
+    (first_name, first), (second_name, second) = named[:2]
+    first_before = first.detach().clone()
+    second_before = second.detach().clone()
+    first_version = first._version
+    second_version = second._version
+    supplied = OrderedDict(
+        (
+            (first_name, torch.full_like(first, 99.0)),
+            (second_name, torch.empty_like(second, device="meta")),
+        )
+    )
+
+    with pytest.raises((NotImplementedError, RuntimeError), match="meta tensor"):
+        bank.load_state_dict(supplied, strict=False)
+
+    assert torch.equal(first, first_before)
+    assert torch.equal(second, second_before)
+    assert first._version == first_version
+    assert second._version == second_version
+
+
+@pytest.mark.parametrize("failure_phase", ["stage", "commit"])
+def test_state_load_failure_is_transactional_and_does_not_mutate_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_phase: str,
+) -> None:
+    transformer = _toy()
+    bank = install_sana_dynamic_atoms(
+        transformer, rank=2, atom_count=4, expected_blocks=2
+    )
+    supplied = OrderedDict(
+        (name, torch.randn_like(parameter, dtype=torch.float64, requires_grad=True))
+        for name, parameter in bank.named_parameters()
+    )
+    sources_before = OrderedDict(
+        (name, value.detach().clone()) for name, value in supplied.items()
+    )
+    targets_before = OrderedDict(
+        (name, parameter.detach().clone())
+        for name, parameter in bank.named_parameters()
+    )
+    versions_before = OrderedDict(
+        (name, parameter._version) for name, parameter in bank.named_parameters()
+    )
+    calls = 0
+
+    if failure_phase == "stage":
+
+        def fail_second_stage(
+            parameter: nn.Parameter, value: torch.Tensor
+        ) -> torch.Tensor:
+            nonlocal calls
+            calls += 1
+            staged = (
+                value.detach()
+                .to(device=parameter.device, dtype=parameter.dtype)
+                .clone()
+            )
+            if calls == 2:
+                raise RuntimeError("stage sentinel")
+            return staged
+
+        monkeypatch.setattr(
+            sana_layout_module,
+            "_stage_state_value",
+            fail_second_stage,
+            raising=False,
+        )
+        expected_message = "stage sentinel"
+    else:
+
+        def fail_second_commit(
+            parameter: nn.Parameter, value: torch.Tensor
+        ) -> None:
+            nonlocal calls
+            calls += 1
+            parameter.copy_(value)
+            if calls == 2:
+                raise RuntimeError("copy sentinel")
+
+        monkeypatch.setattr(
+            sana_layout_module,
+            "_copy_staged_state_value",
+            fail_second_commit,
+            raising=False,
+        )
+        expected_message = "copy sentinel"
+
+    with pytest.raises(RuntimeError, match=expected_message):
+        bank.load_state_dict(supplied, strict=True)
+
+    assert calls == 2
+    for name, parameter in bank.named_parameters():
+        assert torch.equal(parameter, targets_before[name])
+        if failure_phase == "stage":
+            assert parameter._version == versions_before[name]
+        else:
+            assert parameter._version > versions_before[name]
+    for name, source in supplied.items():
+        assert source.dtype == torch.float64
+        assert source.requires_grad
+        assert source.grad is None
+        assert torch.equal(source, sources_before[name])
 
 
 def test_full_and_trainable_only_state_dicts_have_strict_canonical_boundaries() -> None:

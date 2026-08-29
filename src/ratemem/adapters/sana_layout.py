@@ -100,6 +100,103 @@ class SanaStateLoadResult:
     unexpected_keys: list[str]
 
 
+@dataclass(frozen=True, slots=True)
+class _CanonicalWrapperBinding:
+    path: str
+    owner_ref: ReferenceType[nn.Module]
+    attribute: str
+    wrapper_ref: ReferenceType[DynamicAtomLinear]
+
+
+_ActivationState = tuple[Tensor | None, object | None, int | None]
+
+
+def _direct_module_at_path(root: nn.Module, path: str) -> nn.Module:
+    current = root
+    for segment in path.split("."):
+        if type(current._modules) is not dict:
+            raise RuntimeError(
+                f"canonical module registry changed before {path}"
+            )
+        child = current._modules.get(segment)
+        if not isinstance(child, nn.Module):
+            raise RuntimeError(f"canonical module path no longer resolves: {path}")
+        current = child
+    return current
+
+
+def _activation_state(wrapper: DynamicAtomLinear) -> _ActivationState:
+    return (
+        wrapper._coefficients,
+        wrapper._activation_token,
+        wrapper._coefficient_version,
+    )
+
+
+def _same_activation_state(
+    first: _ActivationState, second: _ActivationState
+) -> bool:
+    return (
+        first[0] is second[0]
+        and first[1] is second[1]
+        and first[2] == second[2]
+    )
+
+
+def _require_exact_activation(
+    wrapper: DynamicAtomLinear,
+    coefficients: Tensor,
+    state: _ActivationState,
+) -> None:
+    active_coefficients, activation_token, coefficient_version = state
+    if (
+        active_coefficients is not coefficients
+        or activation_token is None
+        or coefficient_version is None
+    ):
+        raise RuntimeError("wrapper failed to activate the exact coefficient slice")
+    if (
+        type(coefficient_version) is not int
+        or coefficient_version != wrapper._tensor_version(coefficients)
+    ):
+        raise RuntimeError("wrapper activated an invalid coefficient version")
+    wrapper._require_unmodified(active_coefficients, coefficient_version)
+
+
+def _require_unchanged_activation(
+    wrapper: DynamicAtomLinear, expected: _ActivationState
+) -> None:
+    if not _same_activation_state(_activation_state(wrapper), expected):
+        raise RuntimeError(
+            "adapter activation state was modified inside the body"
+        )
+    active_coefficients, _activation_token, coefficient_version = expected
+    if active_coefficients is None or coefficient_version is None:
+        raise RuntimeError("adapter activation state is inconsistent")
+    wrapper._require_unmodified(active_coefficients, coefficient_version)
+
+
+def _restore_activation_state(
+    wrapper: DynamicAtomLinear, state: _ActivationState
+) -> None:
+    coefficients, activation_token, coefficient_version = state
+    object.__setattr__(wrapper, "_coefficients", coefficients)
+    object.__setattr__(wrapper, "_activation_token", activation_token)
+    object.__setattr__(wrapper, "_coefficient_version", coefficient_version)
+
+
+def _stage_state_value(parameter: nn.Parameter, value: Tensor) -> Tensor:
+    return (
+        value.detach()
+        .to(device=parameter.device, dtype=parameter.dtype)
+        .clone()
+    )
+
+
+def _copy_staged_state_value(parameter: nn.Parameter, value: Tensor) -> None:
+    parameter.copy_(value)
+
+
 class SanaDynamicAdapterBank:
     """A non-owning controller for transformer-owned dynamic q/k/v wrappers."""
 
@@ -107,6 +204,9 @@ class SanaDynamicAdapterBank:
         self,
         layout: SanaAdapterLayout,
         wrappers: list[DynamicAtomLinear] | tuple[DynamicAtomLinear, ...],
+        *,
+        transformer: nn.Module,
+        bindings: tuple[_CanonicalWrapperBinding, ...],
     ) -> None:
         if type(layout) is not SanaAdapterLayout:
             raise TypeError("layout must be an exact SanaAdapterLayout")
@@ -122,21 +222,61 @@ class SanaDynamicAdapterBank:
             raise ValueError("wrapper alias is forbidden")
         if any(wrapper.atom_count != layout.atom_count for wrapper in wrapper_tuple):
             raise ValueError("wrapper atom_count does not match the SANA layout")
+        if not isinstance(transformer, nn.Module):
+            raise TypeError("transformer must be an nn.Module")
+        if len(bindings) != layout.projection_count:
+            raise ValueError("canonical binding count does not match the SANA layout")
+        for path, wrapper, binding in zip(
+            layout.projection_names, wrapper_tuple, bindings, strict=True
+        ):
+            if binding.path != path:
+                raise ValueError("canonical binding order does not match the SANA layout")
+            if binding.wrapper_ref() is not wrapper:
+                raise ValueError(f"canonical wrapper binding is invalid at {path}")
 
         self.layout = layout
-        self._wrapper_refs: tuple[ReferenceType[DynamicAtomLinear], ...] = tuple(
-            ref(wrapper) for wrapper in wrapper_tuple
-        )
+        self._transformer_ref: ReferenceType[nn.Module] = ref(transformer)
+        self._bindings = bindings
+        self._resolve_wrappers()
+
+    def _resolve_wrappers(self) -> tuple[DynamicAtomLinear, ...]:
+        transformer = self._transformer_ref()
+        if transformer is None:
+            raise RuntimeError("canonical transformer was released")
+        resolved: list[DynamicAtomLinear] = []
+        for expected_path, binding in zip(
+            self.layout.projection_names, self._bindings, strict=True
+        ):
+            if binding.path != expected_path:
+                raise RuntimeError("canonical adapter binding order changed")
+            owner = binding.owner_ref()
+            wrapper = binding.wrapper_ref()
+            if owner is None:
+                raise RuntimeError(
+                    f"canonical adapter owner was released at {expected_path}"
+                )
+            if wrapper is None:
+                raise RuntimeError(
+                    f"canonical adapter wrapper was released at {expected_path}"
+                )
+            if type(owner._modules) is not dict:
+                raise RuntimeError(
+                    f"canonical owner registry changed at {expected_path}"
+                )
+            if owner._modules.get(binding.attribute) is not wrapper:
+                raise RuntimeError(
+                    f"canonical owner binding changed at {expected_path}"
+                )
+            if _direct_module_at_path(transformer, expected_path) is not wrapper:
+                raise RuntimeError(
+                    f"canonical module path changed at {expected_path}"
+                )
+            resolved.append(wrapper)
+        return tuple(resolved)
 
     @property
     def wrappers(self) -> tuple[DynamicAtomLinear, ...]:
-        resolved: list[DynamicAtomLinear] = []
-        for wrapper_ref in self._wrapper_refs:
-            wrapper = wrapper_ref()
-            if wrapper is None:
-                raise RuntimeError("a transformer-owned adapter wrapper was released")
-            resolved.append(wrapper)
-        return tuple(resolved)
+        return self._resolve_wrappers()
 
     def named_parameters(self) -> Iterator[tuple[str, nn.Parameter]]:
         seen: set[int] = set()
@@ -180,7 +320,7 @@ class SanaDynamicAdapterBank:
                 details.append(f"unexpected keys: {unexpected}")
             raise RuntimeError("strict adapter state load failed; " + "; ".join(details))
 
-        copies: list[tuple[nn.Parameter, Tensor]] = []
+        validated: list[tuple[nn.Parameter, Tensor]] = []
         for name, parameter in expected.items():
             if name not in state_dict:
                 continue
@@ -192,13 +332,18 @@ class SanaDynamicAdapterBank:
                     f"state value {name} has shape {tuple(value.shape)}, "
                     f"expected {tuple(parameter.shape)}"
                 )
-            copies.append((parameter, value))
+            validated.append((parameter, value))
+
+        copies = [
+            (parameter, _stage_state_value(parameter, value))
+            for parameter, value in validated
+        ]
 
         originals = [parameter.detach().clone() for parameter, _value in copies]
         try:
             with torch.no_grad():
                 for parameter, value in copies:
-                    parameter.copy_(value)
+                    _copy_staged_state_value(parameter, value)
         except Exception:
             with torch.no_grad():
                 for (parameter, _value), original in zip(
@@ -211,7 +356,12 @@ class SanaDynamicAdapterBank:
     @contextmanager
     def activate(self, coefficients: Tensor) -> Iterator[None]:
         wrappers = self.wrappers
-        if any(wrapper._coefficients is not None for wrapper in wrappers):
+        if any(
+            not _same_activation_state(
+                _activation_state(wrapper), (None, None, None)
+            )
+            for wrapper in wrappers
+        ):
             raise RuntimeError("adapter coefficients are already active")
         if not isinstance(coefficients, Tensor):
             raise TypeError("coefficients must be a Tensor")
@@ -236,10 +386,31 @@ class SanaDynamicAdapterBank:
             )
             slices = tuple(shaped[:, index] for index in range(len(wrappers)))
 
-        with ExitStack() as stack:
-            for wrapper, alpha in zip(wrappers, slices, strict=True):
-                stack.enter_context(wrapper.use_coefficients(alpha))
-            yield
+        attempted: list[tuple[DynamicAtomLinear, _ActivationState]] = []
+        active: list[tuple[DynamicAtomLinear, _ActivationState]] = []
+        try:
+            with ExitStack() as stack:
+                for wrapper, alpha in zip(wrappers, slices, strict=True):
+                    attempted.append((wrapper, _activation_state(wrapper)))
+                    stack.enter_context(wrapper.use_coefficients(alpha))
+                    active_state = _activation_state(wrapper)
+                    _require_exact_activation(wrapper, alpha, active_state)
+                    active.append((wrapper, active_state))
+                try:
+                    yield
+                finally:
+                    for wrapper, expected_state in active:
+                        _require_unchanged_activation(wrapper, expected_state)
+            for wrapper, expected_state in attempted:
+                if not _same_activation_state(
+                    _activation_state(wrapper), expected_state
+                ):
+                    raise RuntimeError(
+                        "adapter context exit did not restore activation state"
+                    )
+        finally:
+            for wrapper, state in reversed(attempted):
+                _restore_activation_state(wrapper, state)
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +418,7 @@ class _TargetInventory:
     path: str
     attention_name: str
     owner: nn.Module
+    registry: dict[str, nn.Module | None]
     attribute: str
     base: nn.Linear
 
@@ -262,9 +434,17 @@ def _inventory_targets(
 ) -> tuple[_TargetInventory, ...]:
     if not isinstance(transformer, nn.Module):
         raise TypeError("transformer must be an nn.Module")
-    blocks = getattr(transformer, "transformer_blocks", None)
+    if type(transformer._modules) is not dict:
+        raise TypeError("transformer._modules must be an exact built-in dict")
+    blocks = transformer._modules.get("transformer_blocks")
     if not isinstance(blocks, nn.ModuleList):
-        raise TypeError("transformer_blocks must be an nn.ModuleList")
+        raise TypeError(
+            "transformer_blocks must be a canonically registered nn.ModuleList"
+        )
+    if type(blocks._modules) is not dict:
+        raise TypeError(
+            "transformer_blocks._modules must be an exact built-in dict"
+        )
     if len(blocks) != expected_blocks:
         raise ValueError(
             f"expected {expected_blocks} transformer blocks, got {len(blocks)}"
@@ -300,17 +480,35 @@ def _inventory_targets(
     inventory: list[_TargetInventory] = []
     target_placement: tuple[torch.device, torch.dtype] | None = None
 
-    for block_index, block in enumerate(blocks):
+    canonical_blocks: list[nn.Module] = []
+    for block_index in range(expected_blocks):
+        block = blocks._modules.get(str(block_index))
         if not isinstance(block, nn.Module):
-            raise TypeError(f"transformer_blocks.{block_index} must be an nn.Module")
+            raise TypeError(
+                f"transformer_blocks.{block_index} must be canonically registered"
+            )
+        canonical_blocks.append(block)
+
+    for block_index, block in enumerate(canonical_blocks):
+        if type(block._modules) is not dict:
+            raise TypeError(
+                f"transformer_blocks.{block_index}._modules must be an "
+                "exact built-in dict"
+            )
         if module_occurrences[id(block)] != 1 or id(block) in block_ids:
             raise ValueError("transformer block module alias is forbidden")
         block_ids.add(id(block))
         for attention_name in ATTENTION_KINDS:
-            attention = getattr(block, attention_name, None)
+            attention = block._modules.get(attention_name)
             attention_path = f"transformer_blocks.{block_index}.{attention_name}"
             if not isinstance(attention, nn.Module):
-                raise TypeError(f"{attention_path} must be an nn.Module")
+                raise TypeError(
+                    f"{attention_path} must be a canonically registered nn.Module"
+                )
+            if type(attention._modules) is not dict:
+                raise TypeError(
+                    f"{attention_path}._modules must be an exact built-in dict"
+                )
             if (
                 module_occurrences[id(attention)] != 1
                 or id(attention) in attention_ids
@@ -319,13 +517,11 @@ def _inventory_targets(
             attention_ids.add(id(attention))
             for target_name in TARGET_MODULES:
                 path = f"{attention_path}.{target_name}"
-                target = getattr(attention, target_name, None)
+                target = attention._modules.get(target_name)
                 if isinstance(target, _DYNAMIC_ATOM_LINEAR_TYPE):
                     raise ValueError(f"{path} is already wrapped")
                 if type(target) is not nn.Linear:
                     raise TypeError(f"{path} must be an exact nn.Linear")
-                if attention._modules.get(target_name) is not target:
-                    raise TypeError(f"{path} must be a directly registered module")
                 if (
                     module_occurrences[id(target)] != 1
                     or id(target) in linear_ids
@@ -435,6 +631,7 @@ def _inventory_targets(
                         path=path,
                         attention_name=attention_name,
                         owner=attention,
+                        registry=attention._modules,
                         attribute=target_name,
                         base=target,
                     )
@@ -445,6 +642,19 @@ def _inventory_targets(
     if any(module.training for module in transformer.modules()):
         raise ValueError("every transformer module must be in eval before adapter install")
     return tuple(inventory)
+
+
+def _commit_target_module(
+    owner: nn.Module,
+    attribute: str,
+    expected: nn.Module,
+    replacement: nn.Module,
+) -> None:
+    if type(owner._modules) is not dict:
+        raise RuntimeError("target module registry changed before commit")
+    if owner._modules.get(attribute) is not expected:
+        raise RuntimeError("target module changed before commit")
+    owner._modules[attribute] = replacement
 
 
 def install_sana_dynamic_atoms(
@@ -477,11 +687,30 @@ def install_sana_dynamic_atoms(
     try:
         for target, wrapper in zip(inventory, wrappers, strict=True):
             committed.append(target)
-            setattr(target.owner, target.attribute, wrapper)
-        bank = SanaDynamicAdapterBank(layout, wrappers)
+            _commit_target_module(
+                target.owner,
+                target.attribute,
+                target.base,
+                wrapper,
+            )
+        bindings = tuple(
+            _CanonicalWrapperBinding(
+                path=target.path,
+                owner_ref=ref(target.owner),
+                attribute=target.attribute,
+                wrapper_ref=ref(wrapper),
+            )
+            for target, wrapper in zip(inventory, wrappers, strict=True)
+        )
+        bank = SanaDynamicAdapterBank(
+            layout,
+            wrappers,
+            transformer=transformer,
+            bindings=bindings,
+        )
     except Exception:
         for target in reversed(committed):
-            target.owner._modules[target.attribute] = target.base
+            target.registry[target.attribute] = target.base
         raise
     return bank
 
