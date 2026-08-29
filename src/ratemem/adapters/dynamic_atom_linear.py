@@ -7,6 +7,8 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+_UNTRACKED_TENSOR_VERSION = -1
+
 
 class DynamicAtomLinear(nn.Module):
     """A frozen linear layer plus dynamically weighted low-rank atoms.
@@ -17,11 +19,13 @@ class DynamicAtomLinear(nn.Module):
     """
 
     _coefficients: Tensor | None
+    _activation_token: object | None
+    _coefficient_version: int | None
 
     def __init__(self, base: nn.Linear, *, rank: int, atom_count: int) -> None:
         super().__init__()
-        if not isinstance(base, nn.Linear):
-            raise TypeError("base must be an nn.Linear")
+        if type(base) is not nn.Linear:
+            raise TypeError("base must be an exact nn.Linear")
         if type(rank) is not int:
             raise TypeError("rank must be an int")
         if rank < 1:
@@ -44,6 +48,30 @@ class DynamicAtomLinear(nn.Module):
         nn.init.normal_(self.atom_down, mean=0.0, std=0.01)
         nn.init.normal_(self.atom_up, mean=0.0, std=0.01)
         object.__setattr__(self, "_coefficients", None)
+        object.__setattr__(self, "_activation_token", None)
+        object.__setattr__(self, "_coefficient_version", None)
+
+    @staticmethod
+    def _tensor_version(coefficients: Tensor) -> int:
+        try:
+            return int(coefficients._version)
+        except RuntimeError:
+            if not coefficients.is_inference():
+                raise
+            return _UNTRACKED_TENSOR_VERSION
+
+    @classmethod
+    def _require_unmodified(cls, coefficients: Tensor, version: int) -> None:
+        if version == _UNTRACKED_TENSOR_VERSION:
+            if torch.is_grad_enabled():
+                raise RuntimeError(
+                    "untracked inference coefficients require disabled gradients"
+                )
+            return
+        if cls._tensor_version(coefficients) != version:
+            raise RuntimeError(
+                "coefficients were modified in-place during activation"
+            )
 
     @contextmanager
     def use_coefficients(self, coefficients: Tensor) -> Iterator[None]:
@@ -57,11 +85,17 @@ class DynamicAtomLinear(nn.Module):
             raise ValueError(
                 f"coefficient atom dimension must be {self.atom_count}"
             )
+        activation_token = object()
+        coefficient_version = self._tensor_version(coefficients)
         object.__setattr__(self, "_coefficients", coefficients)
+        object.__setattr__(self, "_activation_token", activation_token)
+        object.__setattr__(self, "_coefficient_version", coefficient_version)
         try:
             yield
         finally:
             object.__setattr__(self, "_coefficients", None)
+            object.__setattr__(self, "_activation_token", None)
+            object.__setattr__(self, "_coefficient_version", None)
 
     def _validate_input(self, x: Tensor, coefficients: Tensor | None) -> None:
         if not isinstance(x, Tensor):
@@ -86,16 +120,24 @@ class DynamicAtomLinear(nn.Module):
                 )
 
     def _guard_backward_context(
-        self, output: Tensor, coefficients: Tensor
+        self,
+        output: Tensor,
+        coefficients: Tensor,
+        activation_token: object,
+        coefficient_version: int,
     ) -> Tensor:
         if not output.requires_grad:
             return output
 
         def require_active_context(gradient: Tensor) -> Tensor:
-            if self._coefficients is not coefficients:
+            if (
+                self._activation_token is not activation_token
+                or self._coefficients is not coefficients
+            ):
                 raise RuntimeError(
                     "coefficient context must remain active through backward"
                 )
+            self._require_unmodified(coefficients, coefficient_version)
             return gradient
 
         output.register_hook(require_active_context)  # type: ignore[no-untyped-call]
@@ -103,10 +145,16 @@ class DynamicAtomLinear(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         coefficients = self._coefficients
+        activation_token = self._activation_token
+        coefficient_version = self._coefficient_version
         self._validate_input(x, coefficients)
-        output: Tensor = self.base(x)
         if coefficients is None:
+            output: Tensor = self.base(x)
             return output
+        if activation_token is None or coefficient_version is None:
+            raise RuntimeError("coefficient activation state is inconsistent")
+        self._require_unmodified(coefficients, coefficient_version)
+        output = self.base(x)
 
         dynamic = torch.zeros_like(output)
         for atom_index in range(self.atom_count):
@@ -123,4 +171,10 @@ class DynamicAtomLinear(nn.Module):
                     scale.shape[0], *([1] * (atom_output.ndim - 1))
                 )
             dynamic = dynamic + atom_output * scale
-        return self._guard_backward_context(output + dynamic, coefficients)
+        self._require_unmodified(coefficients, coefficient_version)
+        return self._guard_backward_context(
+            output + dynamic,
+            coefficients,
+            activation_token,
+            coefficient_version,
+        )

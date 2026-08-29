@@ -10,6 +10,10 @@ class _IntSubclass(int):
     pass
 
 
+class _LinearSubclass(nn.Linear):
+    pass
+
+
 def _layer(*, bias: bool = True, dtype: torch.dtype = torch.float32) -> DynamicAtomLinear:
     torch.manual_seed(7)
     return DynamicAtomLinear(
@@ -48,8 +52,21 @@ def _dense_reference(
 
 
 def test_constructor_rejects_a_non_linear_base() -> None:
-    with pytest.raises(TypeError, match="base must be an nn.Linear"):
+    with pytest.raises(TypeError, match="base must be an exact nn.Linear"):
         DynamicAtomLinear(nn.Identity(), rank=2, atom_count=3)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        _LinearSubclass(5, 7),
+        nn.LazyLinear(7),
+    ],
+    ids=["linear-subclass", "lazy-linear"],
+)
+def test_constructor_rejects_linear_subclasses(base: nn.Module) -> None:
+    with pytest.raises(TypeError, match="base must be an exact nn.Linear"):
+        DynamicAtomLinear(base, rank=2, atom_count=3)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

@@ -217,7 +217,7 @@ git commit -m "build: add locked sana pilot dependencies"
 
 - [ ] **Step 1: Write the complete validation, lifecycle, and numerical contract first**
 
-The tests must cover an exact `nn.Linear` base, exact built-in positive integers for rank/count (including rejection of booleans and `int` subclasses), atom device/dtype inheritance, preservation and freezing of the original base object, and transient coefficients that never enter parameters, buffers, or `state_dict` even when the caller passes an `nn.Parameter`. Test nested-context rejection before inspecting the inner value, exception cleanup/reuse, no-context equivalence, exact zero behavior, bias/no-bias, global coefficients with all native Linear leading dimensions, and batched coefficients for inputs with a batch dimension. Invalid coefficient rank/width, scalar input, feature width, and coefficient batch size must fail before the base executes.
+The tests must cover an exact `nn.Linear` base (reject subclasses and `nn.LazyLinear` before touching their parameters), exact built-in positive integers for rank/count (including rejection of booleans and `int` subclasses), atom device/dtype inheritance, preservation and freezing of the original base object, and transient coefficients that never enter parameters, buffers, or `state_dict` even when the caller passes an `nn.Parameter`. Test nested-context rejection before inspecting the inner value, exception cleanup/reuse, no-context equivalence, exact zero behavior, bias/no-bias, global coefficients with all native Linear leading dimensions, and batched coefficients for inputs with a batch dimension. Invalid coefficient rank/width, scalar input, feature width, and coefficient batch size must fail before the base executes. Each activation also owns a unique transient token and records the coefficient tensor version: re-entering with the same tensor must not validate an older graph, and any in-place coefficient mutation from context entry through backward must fail closed.
 
 ```python
 # tests/unit/test_dynamic_atom_linear.py
@@ -285,16 +285,20 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+_UNTRACKED_TENSOR_VERSION = -1
+
 
 class DynamicAtomLinear(nn.Module):
     """Frozen linear layer plus dynamically weighted low-rank atoms."""
 
     _coefficients: Tensor | None
+    _activation_token: object | None
+    _coefficient_version: int | None
 
     def __init__(self, base: nn.Linear, *, rank: int, atom_count: int) -> None:
         super().__init__()
-        if not isinstance(base, nn.Linear):
-            raise TypeError("base must be an nn.Linear")
+        if type(base) is not nn.Linear:
+            raise TypeError("base must be an exact nn.Linear")
         if type(rank) is not int:
             raise TypeError("rank must be an int")
         if rank < 1:
@@ -316,6 +320,28 @@ class DynamicAtomLinear(nn.Module):
         nn.init.normal_(self.atom_down, mean=0.0, std=0.01)
         nn.init.normal_(self.atom_up, mean=0.0, std=0.01)
         object.__setattr__(self, "_coefficients", None)
+        object.__setattr__(self, "_activation_token", None)
+        object.__setattr__(self, "_coefficient_version", None)
+
+    @staticmethod
+    def _tensor_version(coefficients: Tensor) -> int:
+        try:
+            return int(coefficients._version)
+        except RuntimeError:
+            if not coefficients.is_inference():
+                raise
+            return _UNTRACKED_TENSOR_VERSION
+
+    @classmethod
+    def _require_unmodified(cls, coefficients: Tensor, version: int) -> None:
+        if version == _UNTRACKED_TENSOR_VERSION:
+            if torch.is_grad_enabled():
+                raise RuntimeError(
+                    "untracked inference coefficients require disabled gradients"
+                )
+            return
+        if cls._tensor_version(coefficients) != version:
+            raise RuntimeError("coefficients were modified in-place during activation")
 
     @contextmanager
     def use_coefficients(self, coefficients: Tensor) -> Iterator[None]:
@@ -327,11 +353,17 @@ class DynamicAtomLinear(nn.Module):
             raise ValueError("coefficients must be 1D or 2D")
         if coefficients.shape[-1] != self.atom_count:
             raise ValueError(f"coefficient atom dimension must be {self.atom_count}")
+        activation_token = object()
+        coefficient_version = self._tensor_version(coefficients)
         object.__setattr__(self, "_coefficients", coefficients)
+        object.__setattr__(self, "_activation_token", activation_token)
+        object.__setattr__(self, "_coefficient_version", coefficient_version)
         try:
             yield
         finally:
             object.__setattr__(self, "_coefficients", None)
+            object.__setattr__(self, "_activation_token", None)
+            object.__setattr__(self, "_coefficient_version", None)
 
     def _validate_input(self, x: Tensor, coefficients: Tensor | None) -> None:
         if not isinstance(x, Tensor):
@@ -351,13 +383,23 @@ class DynamicAtomLinear(nn.Module):
                     f"input batch {input_batch}"
                 )
 
-    def _guard_backward_context(self, output: Tensor, coefficients: Tensor) -> Tensor:
+    def _guard_backward_context(
+        self,
+        output: Tensor,
+        coefficients: Tensor,
+        activation_token: object,
+        coefficient_version: int,
+    ) -> Tensor:
         if not output.requires_grad:
             return output
 
         def require_active_context(gradient: Tensor) -> Tensor:
-            if self._coefficients is not coefficients:
+            if (
+                self._activation_token is not activation_token
+                or self._coefficients is not coefficients
+            ):
                 raise RuntimeError("coefficient context must remain active through backward")
+            self._require_unmodified(coefficients, coefficient_version)
             return gradient
 
         output.register_hook(require_active_context)  # type: ignore[no-untyped-call]
@@ -365,10 +407,15 @@ class DynamicAtomLinear(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         coefficients = self._coefficients
+        activation_token = self._activation_token
+        coefficient_version = self._coefficient_version
         self._validate_input(x, coefficients)
-        output: Tensor = self.base(x)
         if coefficients is None:
-            return output
+            return self.base(x)
+        if activation_token is None or coefficient_version is None:
+            raise RuntimeError("coefficient activation state is inconsistent")
+        self._require_unmodified(coefficients, coefficient_version)
+        output: Tensor = self.base(x)
         dynamic = torch.zeros_like(output)
         for atom_index in range(self.atom_count):
             low_rank = F.linear(x, self.atom_down[atom_index])
@@ -378,7 +425,13 @@ class DynamicAtomLinear(nn.Module):
             if scale.ndim == 1:
                 scale = scale.reshape(scale.shape[0], *([1] * (atom_output.ndim - 1)))
             dynamic = dynamic + atom_output * scale
-        return self._guard_backward_context(output + dynamic, coefficients)
+        self._require_unmodified(coefficients, coefficient_version)
+        return self._guard_backward_context(
+            output + dynamic,
+            coefficients,
+            activation_token,
+            coefficient_version,
+        )
 ```
 
 - [ ] **Step 4: Run the numerical tests**
@@ -430,7 +483,7 @@ def test_coefficients_stay_active_during_checkpoint_recompute() -> None:
     assert alpha.grad is not None
 ```
 
-Expand these representative tests into the exact contract in `tests/contract/test_dynamic_atom_linear_contract.py`: an active `nn.Parameter` coefficient must not appear in `named_parameters()`, `named_buffers()`, or `state_dict()`; strict state-dict roundtrip must preserve outputs, frozen base parameters, and trainable atoms. Gradients must reach `x`, the original coefficient leaf, and both atom factors but never the base. Under CPU BF16 autocast, FP32 input and FP32 coefficients must still produce BF16 output, with the cast gradient returning to the original FP32 coefficient leaf. Compare eager and `checkpoint(..., use_reentrant=False)` outputs and every gradient, and use a forward hook to prove forward and recomputation observe the same coefficient object. Backward after leaving the coefficient context must raise `coefficient context must remain active through backward` before it can silently recompute the frozen-only path; a later valid context must remain usable.
+Expand these representative tests into the exact contract in `tests/contract/test_dynamic_atom_linear_contract.py`: an active `nn.Parameter` coefficient plus its activation token/version must not appear in `named_parameters()`, `named_buffers()`, or `state_dict()`; strict state-dict roundtrip must preserve outputs, frozen base parameters, and trainable atoms. Gradients must reach `x`, the original coefficient leaf, and both atom factors but never the base. Under CPU BF16 autocast, FP32 input and FP32 coefficients must still produce BF16 output, with the cast gradient returning to the original FP32 coefficient leaf. Compare eager and `checkpoint(..., use_reentrant=False)` outputs and every gradient, and use a forward hook to prove forward and recomputation observe the same coefficient object. Backward after leaving the coefficient context must raise `coefficient context must remain active through backward`; leaving and re-entering with that same tensor still carries a different activation token and must not make the old graph valid. In-place mutation after entry (both before forward and between forward/backward) must raise `coefficients were modified in-place`, and every failure must leave a later fresh context usable. Coefficients created inside `torch.inference_mode()` have no version counter, so record an untracked sentinel: permit it only while gradients are disabled, preserving inference-only dynamic forwards, and fail closed before any grad-enabled forward.
 
 ```python
 # tests/contract/test_dynamic_atom_linear_cuda_memory.py
@@ -518,7 +571,7 @@ def test_dynamic_path_never_passes_a_dense_delta_weight_to_linear(monkeypatch: M
 
 Run: `uv run pytest tests/unit/test_dynamic_atom_linear.py tests/contract/test_dynamic_atom_linear_contract.py -q`
 
-Expected: all CPU tests pass; direct/global/batched numerical cases match dense references, zero is exact, transient state never serializes, autocast does not promote BF16 output, eager/checkpoint outputs and gradients agree, outside-context checkpoint backward fails closed, no base parameter has a gradient, and the coefficient context is empty and reusable after every exit.
+Expected: all CPU tests pass; exact base validation rejects Linear subclasses/LazyLinear, direct/global/batched numerical cases match dense references, zero is exact, transient activation state never serializes, inference tensors work only for no-backward forwards, autocast does not promote BF16 output, eager/checkpoint outputs and gradients agree, old graphs cannot be revived by re-entering the same tensor, coefficient in-place mutation fails closed, no base parameter has a gradient, and the coefficient context is empty and reusable after every exit.
 
 - [ ] **Step 7: Commit the dynamic linear contract**
 

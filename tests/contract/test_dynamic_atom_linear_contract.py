@@ -29,9 +29,11 @@ def test_active_parameter_is_never_registered_or_serialized() -> None:
     assert set(layer.state_dict()) == expected_state
     with layer.use_coefficients(coefficients):
         assert layer._coefficients is coefficients
+        assert layer._activation_token is not None
         assert set(dict(layer.named_parameters())) == expected_parameters
         assert dict(layer.named_buffers()) == {}
         assert set(layer.state_dict()) == expected_state
+    assert layer._activation_token is None
     assert set(dict(layer.named_parameters())) == expected_parameters
     assert dict(layer.named_buffers()) == {}
     assert set(layer.state_dict()) == expected_state
@@ -184,6 +186,99 @@ def test_checkpoint_backward_after_context_exit_fails_closed_and_layer_is_reusab
     with layer.use_coefficients(replacement_coefficients):
         checkpoint(layer, replacement_x, use_reentrant=False).sum().backward()
     assert replacement_coefficients.grad is not None
+
+
+def test_old_checkpoint_output_cannot_reuse_the_same_tensor_in_a_new_activation() -> None:
+    layer = _layer()
+    x = torch.randn(2, 4, 5, requires_grad=True)
+    coefficients = torch.randn(2, layer.atom_count, requires_grad=True)
+
+    with layer.use_coefficients(coefficients):
+        stale_output = checkpoint(layer, x, use_reentrant=False)
+
+    with layer.use_coefficients(coefficients):
+        with pytest.raises(
+            RuntimeError, match="coefficient context must remain active through backward"
+        ):
+            stale_output.square().mean().backward()
+        assert layer._coefficients is coefficients
+    assert coefficients.grad is None
+    assert layer._coefficients is None
+
+    replacement_x = torch.randn(2, 4, 5, requires_grad=True)
+    replacement_coefficients = torch.randn(
+        2, layer.atom_count, requires_grad=True
+    )
+    with layer.use_coefficients(replacement_coefficients):
+        checkpoint(layer, replacement_x, use_reentrant=False).sum().backward()
+    assert replacement_coefficients.grad is not None
+
+
+def test_in_place_coefficient_mutation_before_forward_fails_and_context_recovers() -> None:
+    layer = _layer()
+    coefficients = torch.randn(2, layer.atom_count, requires_grad=True)
+
+    with layer.use_coefficients(coefficients):
+        with torch.no_grad():
+            coefficients.add_(1.0)
+        with pytest.raises(RuntimeError, match="coefficients were modified in-place"):
+            layer(torch.randn(2, 4, 5))
+    assert layer._coefficients is None
+
+    replacement = torch.randn(2, layer.atom_count, requires_grad=True)
+    with layer.use_coefficients(replacement):
+        layer(torch.randn(2, 4, 5)).sum().backward()
+    assert replacement.grad is not None
+
+
+def test_in_place_coefficient_mutation_after_forward_fails_backward_and_recovers() -> None:
+    layer = _layer()
+    x = torch.randn(2, 4, 5, requires_grad=True)
+    coefficients = torch.randn(2, layer.atom_count, requires_grad=True)
+
+    with layer.use_coefficients(coefficients):
+        output = layer(x)
+        with torch.no_grad():
+            coefficients.mul_(2.0)
+        with pytest.raises(RuntimeError, match="coefficients were modified in-place"):
+            output.square().mean().backward()
+    assert coefficients.grad is None
+    assert layer._coefficients is None
+
+    replacement_x = torch.randn(2, 4, 5, requires_grad=True)
+    replacement = torch.randn(2, layer.atom_count, requires_grad=True)
+    with layer.use_coefficients(replacement):
+        layer(replacement_x).sum().backward()
+    assert replacement.grad is not None
+
+
+def test_inference_tensor_coefficients_work_for_inference_only_forward() -> None:
+    layer = _layer()
+    x = torch.randn(2, 4, 5)
+
+    with torch.inference_mode():
+        coefficients = torch.randn(2, layer.atom_count)
+        with layer.use_coefficients(coefficients):
+            output = layer(x)
+
+    assert output.shape == (2, 4, 7)
+    assert not output.requires_grad
+    assert torch.isfinite(output).all()
+    assert layer._coefficients is None
+
+
+def test_untracked_inference_coefficients_fail_closed_in_grad_enabled_forward() -> None:
+    layer = _layer()
+    with torch.inference_mode():
+        coefficients = torch.randn(2, layer.atom_count)
+
+    with layer.use_coefficients(coefficients):
+        with pytest.raises(
+            RuntimeError,
+            match="untracked inference coefficients require disabled gradients",
+        ):
+            layer(torch.randn(2, 4, 5, requires_grad=True))
+    assert layer._coefficients is None
 
 
 def test_dynamic_path_never_passes_a_dense_delta_weight_to_linear(
