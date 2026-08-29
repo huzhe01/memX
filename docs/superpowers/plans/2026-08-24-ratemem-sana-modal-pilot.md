@@ -1136,7 +1136,11 @@ git commit -m "feat: add permutation invariant support amortizer"
 > tests prove one compute winner. Real Subjects hydration and the complete
 > SANA/DINO precompute path are explicit opt-in integration contracts. These
 > eight public training rows are an engineering smoke set only: they are held-in,
-> publication-ineligible, and provide no scientific or CVPR claim evidence.
+> publication-ineligible, and provide no scientific or CVPR claim evidence. The
+> pinned streaming Parquet path explicitly closes an early-stopped iterator and
+> executes the dependency's five-second I/O-thread shutdown barrier; the real
+> hydration integration must exit cleanly, not merely pass before interpreter
+> teardown.
 
 - [x] **Step 1: Write composite-split, manifest, and held-in-only tests**
 

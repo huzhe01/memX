@@ -685,6 +685,7 @@ def test_build_example_rejects_invalid_row_contract(
 class _EightOnlyIterator:
     def __init__(self) -> None:
         self.next_calls = 0
+        self.closed = False
 
     def __iter__(self) -> _EightOnlyIterator:
         return self
@@ -695,6 +696,9 @@ class _EightOnlyIterator:
         index = self.next_calls
         self.next_calls += 1
         return _row(index)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _FakeDataset:
@@ -718,6 +722,7 @@ def test_hydrator_is_the_single_exact_network_boundary_and_stops_before_row_8(
         return dataset
 
     monkeypatch.setattr(pilot_data, "load_dataset", fake_load_dataset)
+    monkeypatch.setattr(pilot_data, "_parquet_thread_shutdown_barrier", lambda: None)
     examples = hydrate_locked_examples(config, cache_dir=tmp_path)
 
     assert calls == [
@@ -736,6 +741,92 @@ def test_hydrator_is_the_single_exact_network_boundary_and_stops_before_row_8(
     ]
     assert tuple(example.row_index for example in examples) == tuple(range(8))
     assert dataset.iterator.next_calls == 8
+
+
+def test_hydrator_closes_early_parquet_iteration_and_runs_shutdown_barrier(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dataset = _FakeDataset()
+    barrier_calls: list[str] = []
+    monkeypatch.setattr(pilot_data, "load_dataset", lambda *a, **k: dataset)
+    monkeypatch.setattr(
+        pilot_data,
+        "_parquet_thread_shutdown_barrier",
+        lambda: barrier_calls.append("barrier"),
+    )
+
+    hydrate_locked_examples(
+        SubjectsPilotConfig.load(SUBJECTS_CONFIG_PATH), cache_dir=tmp_path
+    )
+
+    assert dataset.iterator.closed is True
+    assert barrier_calls == ["barrier"]
+
+
+def test_parquet_shutdown_barrier_uses_the_pinned_datasets_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waits: list[float] = []
+    monkeypatch.setattr(pilot_data.time, "sleep", waits.append)
+
+    pilot_data._parquet_thread_shutdown_barrier()
+
+    assert waits == [5]
+
+
+def test_hydrator_row_failure_still_closes_and_runs_shutdown_barrier(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class _InvalidRowIterator(_EightOnlyIterator):
+        def __next__(self) -> dict[str, object]:
+            row = super().__next__()
+            row["collection"] = 7
+            return row
+
+    dataset = _FakeDataset()
+    dataset.iterator = _InvalidRowIterator()
+    barrier_calls: list[str] = []
+    monkeypatch.setattr(pilot_data, "load_dataset", lambda *a, **k: dataset)
+    monkeypatch.setattr(
+        pilot_data,
+        "_parquet_thread_shutdown_barrier",
+        lambda: barrier_calls.append("barrier"),
+    )
+
+    with pytest.raises(TypeError, match="collection"):
+        hydrate_locked_examples(
+            SubjectsPilotConfig.load(SUBJECTS_CONFIG_PATH), cache_dir=tmp_path
+        )
+
+    assert dataset.iterator.closed is True
+    assert barrier_calls == ["barrier"]
+
+
+def test_hydrator_close_failure_still_runs_shutdown_barrier(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class _CloseFailureIterator(_EightOnlyIterator):
+        def close(self) -> None:
+            self.closed = True
+            raise RuntimeError("stream close failed")
+
+    dataset = _FakeDataset()
+    dataset.iterator = _CloseFailureIterator()
+    barrier_calls: list[str] = []
+    monkeypatch.setattr(pilot_data, "load_dataset", lambda *a, **k: dataset)
+    monkeypatch.setattr(
+        pilot_data,
+        "_parquet_thread_shutdown_barrier",
+        lambda: barrier_calls.append("barrier"),
+    )
+
+    with pytest.raises(RuntimeError, match="stream close failed"):
+        hydrate_locked_examples(
+            SubjectsPilotConfig.load(SUBJECTS_CONFIG_PATH), cache_dir=tmp_path
+        )
+
+    assert dataset.iterator.closed is True
+    assert barrier_calls == ["barrier"]
 
 
 def test_hydrator_validates_features_before_iterating(

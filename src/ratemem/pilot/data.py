@@ -7,6 +7,7 @@ import os
 import stat
 import struct
 import tempfile
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from typing import Any, Never, cast
 import torch
 from datasets import Features, Value, load_dataset  # type: ignore[import-untyped]
 from datasets import Image as DatasetImage
+from datasets import config as datasets_config
 from diffusers.models.autoencoders.vae import EncoderOutput
 from PIL import Image
 from safetensors import safe_open
@@ -467,6 +469,15 @@ def _validate_features(features: object, config: SubjectsPilotConfig) -> None:
                 raise ValueError(f"dataset {section_name}.{name} feature dtype changed")
 
 
+def _parquet_thread_shutdown_barrier() -> None:
+    """Wait for the pinned datasets/PyArrow early-iteration shutdown barrier."""
+
+    delay = datasets_config.SLEEP_TIME_ON_THREADS_SHUTDOWN
+    if type(delay) is not int or delay != 5:
+        raise RuntimeError("datasets Parquet shutdown delay changed from pinned value 5")
+    time.sleep(delay)
+
+
 def hydrate_locked_examples(
     config: SubjectsPilotConfig,
     *,
@@ -492,12 +503,23 @@ def hydrate_locked_examples(
     _validate_features(getattr(rows, "features", None), locked)
     iterator = iter(rows)
     examples: list[PilotExample] = []
-    for row_index in locked.row_indices:
+    try:
+        for row_index in locked.row_indices:
+            try:
+                row = next(iterator)
+            except StopIteration as error:
+                raise RuntimeError(
+                    "dataset ended before every locked row was returned"
+                ) from error
+            examples.append(build_example(row_index, row, locked))
+    finally:
+        close = getattr(iterator, "close", None)
+        if not callable(close):
+            raise TypeError("streaming dataset iterator must expose close()")
         try:
-            row = next(iterator)
-        except StopIteration as error:
-            raise RuntimeError("dataset ended before every locked row was returned") from error
-        examples.append(build_example(row_index, row, locked))
+            close()
+        finally:
+            _parquet_thread_shutdown_barrier()
     return tuple(examples)
 
 
