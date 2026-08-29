@@ -586,213 +586,57 @@ git commit -m "feat: add dynamic atom linear contract"
 - Create: `src/ratemem/adapters/sana_layout.py`
 - Create: `tests/unit/test_sana_layout.py`
 - Create: `tests/contract/test_sana_cpu_integration.py`
+- Create: `tests/contract/test_sana_layout_cuda.py`
 
-- [ ] **Step 1: Write layout and activation tests against a tiny randomized SANA**
+- [x] **Step 1: Write the complete canonical-layout and transaction RED suite**
 
-```python
-# tests/unit/test_sana_layout.py
-import torch
-from diffusers import SanaTransformer2DModel
+Define one immutable contract shared with Task 4: `SANA_LAYOUT_VERSION = "sana-qkv-v1"`, `ATTENTION_KINDS = ("attn1", "attn2")`, and `TARGET_MODULES = ("to_q", "to_k", "to_v")`. The production layout is block-major/attention-major/projection-major: 20 blocks, 120 projections, a 480-value code for four atoms, 240 atom tensors, and exactly 8,601,600 trainable atom values at width 2240/rank 4.
 
-from ratemem.adapters.dynamic_atom_linear import DynamicAtomLinear
-from ratemem.adapters.sana_layout import SanaAdapterLayout, install_sana_dynamic_atoms
+The generic install tests must use a frozen, recursively-eval toy transformer and snapshot every module identity/training flag, parameter identity/requires-grad/device/dtype, and state tensor. Inventory the entire layout before construction, construct every wrapper before commit, and commit only after all validation passes. Missing/wrong final targets, an injected Nth constructor failure, and a setter that mutates then raises during commit must restore the complete snapshot. Reject root or deep-child train mode, any unfrozen parameter, exact-Linear violations, an existing wrapper/second install, and block/attention/Linear/Parameter/storage aliases. Canonical qkv modules and their weight/bias Parameters must be directly registered and have one module/Parameter/storage owner across the whole transformer, including non-qkv module, Parameter, and registered-buffer paths; empty buffers must not alias merely because their data pointer is zero. Generic install also validates positive `in_features`/`out_features`, exact weight `(out, in)` and bias `(out,)` shapes/numel, rejects meta/offloaded targets, mixed target device/dtype, and bias placement that differs from its weight.
 
+- [x] **Step 2: Run RED before the module exists**
 
-def tiny_sana() -> SanaTransformer2DModel:
-    return SanaTransformer2DModel(
-        in_channels=4,
-        out_channels=4,
-        num_attention_heads=2,
-        attention_head_dim=4,
-        num_layers=2,
-        num_cross_attention_heads=2,
-        cross_attention_head_dim=4,
-        cross_attention_dim=8,
-        caption_channels=8,
-        mlp_ratio=1.0,
-        sample_size=4,
-        patch_size=1,
-        qk_norm=None,
-    )
+Run: `uv run pytest tests/unit/test_sana_layout.py tests/contract/test_sana_cpu_integration.py -q`
 
+Expected: collection fails with `ModuleNotFoundError: ratemem.adapters.sana_layout`.
 
-def test_layout_order_and_code_shape_are_stable() -> None:
-    layout = SanaAdapterLayout(num_blocks=2, atom_count=4)
-    assert layout.code_shape == (2, 2, 3, 4)
-    assert layout.code_dim == 48
-    assert layout.projection_names[:3] == (
-        "transformer_blocks.0.attn1.to_q",
-        "transformer_blocks.0.attn1.to_k",
-        "transformer_blocks.0.attn1.to_v",
-    )
-    assert layout.projection_names[-1] == "transformer_blocks.1.attn2.to_v"
+- [x] **Step 3: Implement inventory -> validate -> construct -> commit**
 
+Keep the public APIs `SanaAdapterLayout`, `SanaDynamicAdapterBank`, and `install_sana_dynamic_atoms(transformer, rank, atom_count, expected_blocks)`. Require exact positive integer dimensions. Inventory canonical qkv paths and global ownership/placement first; require all transformer parameters frozen and every submodule already in eval. Construct detached `DynamicAtomLinear` wrappers, call `eval()` on them, then commit in canonical order. On any commit or Bank-construction exception, restore original bases directly through the owning module's `_modules` mapping so even a failing custom `__setattr__` cannot block rollback.
 
-def test_install_wraps_only_qkv_and_activation_clears() -> None:
-    transformer = tiny_sana()
-    bank = install_sana_dynamic_atoms(transformer, rank=2, atom_count=4, expected_blocks=2)
-    wrappers = [module for module in transformer.modules() if isinstance(module, DynamicAtomLinear)]
-    assert len(wrappers) == 12
-    assert not isinstance(transformer.transformer_blocks[0].attn1.to_out[0], DynamicAtomLinear)
-    coefficients = torch.randn(1, bank.layout.code_dim)
-    with bank.activate(coefficients):
-        assert all(wrapper._coefficients is not None for wrapper in wrappers)
-    assert all(wrapper._coefficients is None for wrapper in wrappers)
-```
+`SanaDynamicAdapterBank` is deliberately not an `nn.Module`: the transformer is the sole owner of wrappers, while the Bank stores only weak references. `parameters()`/`named_parameters()` yield each atom exactly once under canonical transformer paths. `state_dict()` and strict `load_state_dict()` are trainable-only and contain no `base.*`, positional `wrappers.*`, or frozen duplicates; the installed transformer's ordinary state dict remains the full strict-roundtrip boundary.
 
-- [ ] **Step 2: Run the layout tests and observe the missing module**
+- [x] **Step 4: Implement all-or-nothing scoped activation**
 
-Run: `uv run pytest tests/unit/test_sana_layout.py -q`
+Accept only 1D `[code_dim]` and 2D `[batch, code_dim]` tensors. Prevalidate code shape and confirm every wrapper is inactive before entering any context. Reshape to `[projection, atom]` or `[batch, projection, atom]` and map slices in canonical order. Use `ExitStack` so body errors and an injected intermediate `__enter__` failure clean every earlier wrapper. Nested activation and a genuinely externally-active middle wrapper must fail before touching other wrappers and must preserve the outer coefficient object.
 
-Expected: collection fails because `ratemem.adapters.sana_layout` does not exist.
+Use exhaustive arange codes for both global and batched mapping, and backpropagate through the views to prove every input code value receives exactly one gradient contribution.
 
-- [ ] **Step 3: Implement stable layout validation, installation, and scoped activation**
+- [x] **Step 5: Separate the fixed production validator from the tiny installer**
 
-```python
-# src/ratemem/adapters/sana_layout.py
-from __future__ import annotations
+`validate_production_sana_layout(...)` enforces rank 4, four atoms, 20 blocks, each target's `in_features == out_features == 2240`, all 120 weights exactly `[2240, 2240]`, no bias on `attn1`, an exact `[2240]`/2240-value bias on `attn2`, 240 atom tensors, and 8,601,600 atom values. CPU structural tests may use uniform BF16 meta modules with `require_cuda_bfloat16=False`; the default real contract also requires every weight and bias to be CUDA BF16. Keep that real randomized allocation test behind both the `cuda` marker and `RATEMEM_RUN_PRODUCTION_SANA_LAYOUT=1`. Do not hardcode production width/device into the generic two-block Diffusers test path.
 
-from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+- [x] **Step 6: Prove Diffusers 0.40 integration without a checkpoint**
 
-from torch import Tensor, nn
+Use a two-block randomized `SanaTransformer2DModel`, freeze it, recursively set eval, and install twelve wrappers. Assert zero code is bit-exact to the pre-install transformer, non-qkv modules keep identity, batched codes equal independent per-example forwards, and code plus both atom factors on every wrapper receive gradients while every base remains grad-free. Strictly round-trip the installed full transformer state and separately assert the Bank's canonical trainable-only key set. This suite must not access the network or load a real checkpoint.
 
-from ratemem.adapters.dynamic_atom_linear import DynamicAtomLinear
+- [x] **Step 7: Run the complete Task 3 and free verification suites**
 
-ATTENTION_NAMES = ("attn1", "attn2")
-PROJECTION_NAMES = ("to_q", "to_k", "to_v")
-
-
-@dataclass(frozen=True)
-class SanaAdapterLayout:
-    num_blocks: int
-    atom_count: int
-
-    @property
-    def code_shape(self) -> tuple[int, int, int, int]:
-        return (self.num_blocks, len(ATTENTION_NAMES), len(PROJECTION_NAMES), self.atom_count)
-
-    @property
-    def code_dim(self) -> int:
-        blocks, attention, projections, atoms = self.code_shape
-        return blocks * attention * projections * atoms
-
-    @property
-    def projection_names(self) -> tuple[str, ...]:
-        return tuple(
-            f"transformer_blocks.{block}.{attention}.{projection}"
-            for block in range(self.num_blocks)
-            for attention in ATTENTION_NAMES
-            for projection in PROJECTION_NAMES
-        )
-
-
-class SanaDynamicAdapterBank(nn.Module):
-    def __init__(self, layout: SanaAdapterLayout, wrappers: list[DynamicAtomLinear]) -> None:
-        super().__init__()
-        if len(wrappers) != layout.num_blocks * 2 * 3:
-            raise ValueError("wrapper count does not match SANA adapter layout")
-        self.layout = layout
-        self.wrappers = nn.ModuleList(wrappers)
-
-    @contextmanager
-    def activate(self, coefficients: Tensor) -> Iterator[None]:
-        if coefficients.ndim == 1:
-            coefficients = coefficients.reshape(self.layout.code_shape)
-        elif coefficients.ndim == 2:
-            coefficients = coefficients.reshape(coefficients.shape[0], *self.layout.code_shape)
-        else:
-            raise ValueError("coefficients must be a flat code or a batch of flat codes")
-        with ExitStack() as stack:
-            for index, wrapper in enumerate(self.wrappers):
-                block = index // 6
-                attention = (index % 6) // 3
-                projection = index % 3
-                alpha = coefficients[block, attention, projection] if coefficients.ndim == 4 else coefficients[:, block, attention, projection]
-                stack.enter_context(wrapper.use_coefficients(alpha))
-            yield
-
-
-def install_sana_dynamic_atoms(
-    transformer: nn.Module, *, rank: int, atom_count: int, expected_blocks: int
-) -> SanaDynamicAdapterBank:
-    blocks = getattr(transformer, "transformer_blocks", None)
-    if blocks is None or len(blocks) != expected_blocks:
-        raise ValueError(f"expected {expected_blocks} SANA blocks")
-    wrappers: list[DynamicAtomLinear] = []
-    for block in blocks:
-        for attention_name in ATTENTION_NAMES:
-            attention = getattr(block, attention_name, None)
-            if attention is None:
-                raise ValueError(f"missing {attention_name}")
-            for projection_name in PROJECTION_NAMES:
-                projection = getattr(attention, projection_name, None)
-                if not isinstance(projection, nn.Linear):
-                    raise TypeError(f"{attention_name}.{projection_name} must be nn.Linear")
-                wrapper = DynamicAtomLinear(projection, rank=rank, atom_count=atom_count)
-                setattr(attention, projection_name, wrapper)
-                wrappers.append(wrapper)
-    return SanaDynamicAdapterBank(SanaAdapterLayout(expected_blocks, atom_count), wrappers)
-```
-
-- [ ] **Step 4: Run the layout tests**
-
-Run: `uv run pytest tests/unit/test_sana_layout.py -q`
-
-Expected: `2 passed`.
-
-- [ ] **Step 5: Add a full tiny-SANA forward/backward contract on CPU**
-
-```python
-# tests/contract/test_sana_cpu_integration.py
-import torch
-from diffusers import SanaTransformer2DModel
-
-from ratemem.adapters.sana_layout import install_sana_dynamic_atoms
-
-
-def tiny_sana() -> SanaTransformer2DModel:
-    return SanaTransformer2DModel(
-        in_channels=4, out_channels=4, num_attention_heads=2, attention_head_dim=4,
-        num_layers=2, num_cross_attention_heads=2, cross_attention_head_dim=4,
-        cross_attention_dim=8, caption_channels=8, mlp_ratio=1.0, sample_size=4, patch_size=1,
-    )
-
-
-def test_randomized_sana_uses_per_example_codes_on_cpu() -> None:
-    torch.manual_seed(11)
-    transformer = tiny_sana()
-    transformer.requires_grad_(False)
-    bank = install_sana_dynamic_atoms(transformer, rank=2, atom_count=4, expected_blocks=2)
-    hidden = torch.randn(2, 4, 4, 4)
-    captions = torch.randn(2, 3, 8)
-    mask = torch.ones(2, 3)
-    timesteps = torch.tensor([100.0, 700.0])
-    codes = torch.randn(2, bank.layout.code_dim, requires_grad=True)
-    with bank.activate(codes):
-        output = transformer(
-            hidden_states=hidden,
-            encoder_hidden_states=captions,
-            encoder_attention_mask=mask,
-            timestep=timesteps,
-        ).sample
-        output.square().mean().backward()
-    assert output.shape == hidden.shape
-    assert codes.grad is not None and torch.count_nonzero(codes.grad) > 0
-    assert all(parameter.grad is None for parameter in bank.wrappers[0].base.parameters())
-```
-
-- [ ] **Step 6: Run the CPU integration contract**
-
-Run: `uv run pytest tests/contract/test_sana_cpu_integration.py -q`
-
-Expected: `1 passed`; the test neither downloads weights nor requires CUDA.
-
-- [ ] **Step 7: Commit the SANA adapter layout**
+Run:
 
 ```bash
-git add src/ratemem/adapters/sana_layout.py tests/unit/test_sana_layout.py tests/contract/test_sana_cpu_integration.py
+uv run pytest tests/unit/test_sana_layout.py tests/contract/test_sana_cpu_integration.py -q
+uv run pytest -m "not cuda and not real_sana and not paid_modal" -q
+uv run ruff check src tests
+uv run mypy
+```
+
+Expected: all Task 3 CPU tests and all free tests pass; CUDA production validation remains collected but opt-in only.
+
+- [x] **Step 8: Commit the SANA adapter layout**
+
+```bash
+git add src/ratemem/adapters/sana_layout.py tests/unit/test_sana_layout.py tests/contract/test_sana_cpu_integration.py tests/contract/test_sana_layout_cuda.py docs/superpowers/plans/2026-08-24-ratemem-sana-modal-pilot.md
 git commit -m "feat: install dynamic atoms in sana qkv projections"
 ```
 
@@ -816,6 +660,11 @@ from pathlib import Path
 import pytest
 
 from ratemem.pilot.config import SanaPilotConfig
+from ratemem.adapters.sana_layout import (
+    ATTENTION_KINDS,
+    SANA_LAYOUT_VERSION,
+    TARGET_MODULES,
+)
 
 CONFIG_PATH = Path("configs/pilot/sana-1.5-1.6b.json")
 
@@ -825,7 +674,9 @@ def test_committed_sana_config_has_full_pins_and_expected_layout() -> None:
     assert config.model_id == "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers"
     assert config.revision == "b77948f2b4eed5c728e9b828ccff07f7427b43cc"
     assert config.support_revision == "ed25f3a31f01632728cabb09d1542f84ab7b0056"
-    assert config.target_modules == ("to_q", "to_k", "to_v")
+    assert config.layout_version == SANA_LAYOUT_VERSION
+    assert config.attention_kinds == ATTENTION_KINDS
+    assert config.target_modules == TARGET_MODULES
     assert config.code_shape == (20, 2, 3, 4)
     assert config.code_dim == 480
     assert config.atom_parameter_count == 8_601_600
@@ -867,6 +718,7 @@ Expected: collection fails because `ratemem.pilot.config` does not exist.
     "feature_dim": 384
   },
   "adapter": {
+    "layout_version": "sana-qkv-v1",
     "num_blocks": 20,
     "attention_kinds": ["attn1", "attn2"],
     "target_modules": ["to_q", "to_k", "to_v"],
@@ -901,6 +753,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ratemem.adapters.sana_layout import (
+    ATTENTION_KINDS,
+    SANA_LAYOUT_VERSION,
+    TARGET_MODULES,
+    SanaAdapterLayout,
+)
+
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -921,6 +780,7 @@ class SanaPilotConfig:
     support_model_id: str
     support_revision: str
     support_feature_dim: int
+    layout_version: str
     num_blocks: int
     attention_kinds: tuple[str, ...]
     target_modules: tuple[str, ...]
@@ -951,7 +811,7 @@ class SanaPilotConfig:
         _exact_keys(support, {"model_id", "revision", "feature_dim"}, "support_encoder")
         _exact_keys(
             adapter,
-            {"num_blocks", "attention_kinds", "target_modules", "width", "rank", "atom_count", "projection_count", "code_dim", "atom_parameter_count"},
+            {"layout_version", "num_blocks", "attention_kinds", "target_modules", "width", "rank", "atom_count", "projection_count", "code_dim", "atom_parameter_count"},
             "adapter",
         )
         _exact_keys(
@@ -979,15 +839,25 @@ class SanaPilotConfig:
             latent_channels=sana["latent_channels"], latent_size=sana["latent_size"],
             text_feature_dim=sana["text_feature_dim"], max_sequence_length=sana["max_sequence_length"],
             support_model_id=support["model_id"], support_revision=support["revision"],
-            support_feature_dim=support["feature_dim"], num_blocks=adapter["num_blocks"],
+            support_feature_dim=support["feature_dim"], layout_version=adapter["layout_version"],
+            num_blocks=adapter["num_blocks"],
             attention_kinds=tuple(adapter["attention_kinds"]), target_modules=tuple(adapter["target_modules"]),
             width=adapter["width"], rank=adapter["rank"], atom_count=adapter["atom_count"],
             projection_count=adapter["projection_count"], code_dim=adapter["code_dim"],
             atom_parameter_count=adapter["atom_parameter_count"],
         )
-        expected_projections = config.num_blocks * len(config.attention_kinds) * len(config.target_modules)
-        expected_code_dim = expected_projections * config.atom_count
-        expected_atom_parameters = expected_projections * (2 * config.width) * config.rank * config.atom_count
+        if (
+            config.layout_version != SANA_LAYOUT_VERSION
+            or config.attention_kinds != ATTENTION_KINDS
+            or config.target_modules != TARGET_MODULES
+        ):
+            raise ValueError("adapter layout version/order does not match the runtime contract")
+        layout = SanaAdapterLayout(config.num_blocks, config.atom_count)
+        expected_projections = layout.projection_count
+        expected_code_dim = layout.code_dim
+        expected_atom_parameters = layout.trainable_parameter_count(
+            width=config.width, rank=config.rank
+        )
         if (config.projection_count, config.code_dim, config.atom_parameter_count) != (
             expected_projections, expected_code_dim, expected_atom_parameters
         ):
