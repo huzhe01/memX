@@ -4,6 +4,7 @@ import gc
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import contextmanager
+from inspect import Parameter, signature
 from typing import Any
 from weakref import ref
 
@@ -711,6 +712,78 @@ def test_bank_is_non_owning_and_exposes_unique_canonical_trainables() -> None:
     assert not any(
         isinstance(value, nn.Module) for value in vars(bank).values()
     )
+
+
+def test_public_bank_constructor_keeps_exact_two_argument_api() -> None:
+    parameters = tuple(signature(SanaDynamicAdapterBank).parameters.values())
+
+    assert tuple(parameter.name for parameter in parameters) == (
+        "layout",
+        "wrappers",
+    )
+    assert all(
+        parameter.kind is Parameter.POSITIONAL_OR_KEYWORD
+        for parameter in parameters
+    )
+    assert all(parameter.default is Parameter.empty for parameter in parameters)
+
+
+def test_direct_bank_constructor_supports_state_and_activation() -> None:
+    layout = SanaAdapterLayout(num_blocks=1, atom_count=3)
+    wrappers = tuple(
+        DynamicAtomLinear(nn.Linear(4, 4), rank=2, atom_count=3)
+        for _path in layout.projection_names
+    )
+    bank = SanaDynamicAdapterBank(layout, wrappers)
+
+    assert bank.wrappers == wrappers
+    expected_keys = tuple(
+        f"{path}.{atom}"
+        for path in layout.projection_names
+        for atom in ("atom_down", "atom_up")
+    )
+    state = bank.state_dict()
+    assert tuple(state) == expected_keys
+    replacement = OrderedDict(
+        (name, torch.full_like(value, float(index + 1)))
+        for index, (name, value) in enumerate(state.items())
+    )
+    result = bank.load_state_dict(replacement, strict=True)
+    assert result.missing_keys == []
+    assert result.unexpected_keys == []
+    for name, value in bank.state_dict().items():
+        torch.testing.assert_close(value, replacement[name], rtol=0.0, atol=0.0)
+
+    code = torch.arange(layout.code_dim, dtype=torch.float32)
+    with bank.activate(code):
+        for index, wrapper in enumerate(wrappers):
+            start = index * layout.atom_count
+            torch.testing.assert_close(
+                wrapper._coefficients,
+                code[start : start + layout.atom_count],
+                rtol=0.0,
+                atol=0.0,
+            )
+    assert all(wrapper._coefficients is None for wrapper in wrappers)
+
+
+def test_direct_bank_does_not_keep_wrappers_alive() -> None:
+    def construct() -> tuple[SanaDynamicAdapterBank, tuple[Any, ...]]:
+        layout = SanaAdapterLayout(num_blocks=1, atom_count=3)
+        wrappers = tuple(
+            DynamicAtomLinear(nn.Linear(4, 4), rank=2, atom_count=3)
+            for _path in layout.projection_names
+        )
+        return SanaDynamicAdapterBank(layout, wrappers), tuple(
+            ref(wrapper) for wrapper in wrappers
+        )
+
+    bank, wrapper_refs = construct()
+    gc.collect()
+
+    assert all(wrapper_ref() is None for wrapper_ref in wrapper_refs)
+    with pytest.raises(RuntimeError, match="released"):
+        _ = bank.wrappers
 
 
 def test_bank_does_not_keep_transformer_owner_or_wrapper_alive() -> None:

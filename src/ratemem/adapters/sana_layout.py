@@ -204,9 +204,6 @@ class SanaDynamicAdapterBank:
         self,
         layout: SanaAdapterLayout,
         wrappers: list[DynamicAtomLinear] | tuple[DynamicAtomLinear, ...],
-        *,
-        transformer: nn.Module,
-        bindings: tuple[_CanonicalWrapperBinding, ...],
     ) -> None:
         if type(layout) is not SanaAdapterLayout:
             raise TypeError("layout must be an exact SanaAdapterLayout")
@@ -222,10 +219,29 @@ class SanaDynamicAdapterBank:
             raise ValueError("wrapper alias is forbidden")
         if any(wrapper.atom_count != layout.atom_count for wrapper in wrapper_tuple):
             raise ValueError("wrapper atom_count does not match the SANA layout")
+
+        self.layout = layout
+        self._wrapper_refs: tuple[ReferenceType[DynamicAtomLinear], ...] = tuple(
+            ref(wrapper) for wrapper in wrapper_tuple
+        )
+        self._transformer_ref: ReferenceType[nn.Module] | None = None
+        self._bindings: tuple[_CanonicalWrapperBinding, ...] | None = None
+
+    @classmethod
+    def _from_installed(
+        cls,
+        layout: SanaAdapterLayout,
+        wrappers: list[DynamicAtomLinear] | tuple[DynamicAtomLinear, ...],
+        *,
+        transformer: nn.Module,
+        bindings: tuple[_CanonicalWrapperBinding, ...],
+    ) -> SanaDynamicAdapterBank:
+        bank = cls(layout, wrappers)
         if not isinstance(transformer, nn.Module):
             raise TypeError("transformer must be an nn.Module")
         if len(bindings) != layout.projection_count:
             raise ValueError("canonical binding count does not match the SANA layout")
+        wrapper_tuple = bank._resolve_wrappers()
         for path, wrapper, binding in zip(
             layout.projection_names, wrapper_tuple, bindings, strict=True
         ):
@@ -234,18 +250,33 @@ class SanaDynamicAdapterBank:
             if binding.wrapper_ref() is not wrapper:
                 raise ValueError(f"canonical wrapper binding is invalid at {path}")
 
-        self.layout = layout
-        self._transformer_ref: ReferenceType[nn.Module] = ref(transformer)
-        self._bindings = bindings
-        self._resolve_wrappers()
+        bank._transformer_ref = ref(transformer)
+        bank._bindings = bindings
+        bank._resolve_wrappers()
+        return bank
 
     def _resolve_wrappers(self) -> tuple[DynamicAtomLinear, ...]:
-        transformer = self._transformer_ref()
+        transformer_ref = self._transformer_ref
+        bindings = self._bindings
+        if transformer_ref is None and bindings is None:
+            resolved: list[DynamicAtomLinear] = []
+            for wrapper_ref in self._wrapper_refs:
+                wrapper = wrapper_ref()
+                if wrapper is None:
+                    raise RuntimeError(
+                        "a transformer-owned adapter wrapper was released"
+                    )
+                resolved.append(wrapper)
+            return tuple(resolved)
+        if transformer_ref is None or bindings is None:
+            raise RuntimeError("canonical adapter binding state is inconsistent")
+
+        transformer = transformer_ref()
         if transformer is None:
             raise RuntimeError("canonical transformer was released")
-        resolved: list[DynamicAtomLinear] = []
+        resolved = []
         for expected_path, binding in zip(
-            self.layout.projection_names, self._bindings, strict=True
+            self.layout.projection_names, bindings, strict=True
         ):
             if binding.path != expected_path:
                 raise RuntimeError("canonical adapter binding order changed")
@@ -702,7 +733,7 @@ def install_sana_dynamic_atoms(
             )
             for target, wrapper in zip(inventory, wrappers, strict=True)
         )
-        bank = SanaDynamicAdapterBank(
+        bank = SanaDynamicAdapterBank._from_installed(
             layout,
             wrappers,
             transformer=transformer,
