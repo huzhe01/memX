@@ -14,6 +14,7 @@ import ratemem.pilot.workspace as workspace_module
 from ratemem.pilot.config import ModalBudgetConfig
 from ratemem.pilot.private_io import ensure_private_directory, write_exclusive_private_json
 from ratemem.pilot.workspace import (
+    OperatorBudgetAttestation,
     WorkspaceSnapshot,
     capture_workspace_snapshot,
     verify_fresh_attestation_file,
@@ -38,12 +39,13 @@ def _private_evidence(tmp_path: Path) -> Path:
             "workspace": "authorized-workspace",
             "environment": "main",
             "workspace_budget_usd": "28.00",
+            "workspace_spend_limit_usd": "0.00",
             "captured_at": datetime.now(UTC).isoformat(),
             "dashboard_evidence_path": str(dashboard),
             "dashboard_evidence_sha256": hashlib.sha256(dashboard.read_bytes()).hexdigest(),
             "confirmation_statement": (
                 "I confirm the Modal dashboard Workspace usage budget is USD 28.00 "
-                "before credits."
+                "before credits and the Workspace spend limit is USD 0.00 after credits."
             ),
         },
     )
@@ -67,6 +69,27 @@ def _snapshot(tmp_path: Path) -> WorkspaceSnapshot:
             "volume_gib_month": "0.09",
         },
     ).with_evidence_hash()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"workspace_spend_limit_usd": "0.01"}, "budget identity"),
+        ({"workspace_spend_limit_usd": 0}, "exact strings"),
+        ({"unexpected": "field"}, "schema"),
+    ],
+)
+def test_operator_attestation_requires_exact_zero_spend_limit(
+    tmp_path: Path,
+    mutation: dict[str, object],
+    message: str,
+) -> None:
+    original = workspace_module.read_private_json(_private_evidence(tmp_path))
+    path = tmp_path / "private" / "mutated-attestation.json"
+    write_exclusive_private_json(path, original | mutation)
+    with pytest.raises((TypeError, ValueError), match=message):
+        evidence = OperatorBudgetAttestation.from_private_file(path)
+        evidence.verify(expected_workspace="authorized-workspace", max_age_seconds=900)
 
 
 def test_committed_budget_is_exact_and_phase_split_is_not_extra_authority() -> None:
@@ -212,6 +235,28 @@ def test_capture_uses_active_profile_and_metered_cost_before_credit(
     assert snapshot.known_metered_usage_usd != billing["billed_cost"]
 
 
+def test_billing_accepts_exact_dynamic_compute_storage_and_adjustment_maps() -> None:
+    payload = {
+        "metered_cost": "1.25",
+        "billed_cost": "0.00",
+        "adjustments": {"credits": "-1.00", "free_volume_storage": "-0.25"},
+        "metered_cost_breakdown": {"compute": "1.20", "volume_storage": "0.05"},
+    }
+
+    assert workspace_module._validate_billing(payload) == "1.25"
+
+
+def test_zero_billing_accepts_empty_breakdown_and_adjustment_maps() -> None:
+    payload = {
+        "metered_cost": "0.00",
+        "billed_cost": "0.00",
+        "adjustments": {},
+        "metered_cost_breakdown": {},
+    }
+
+    assert workspace_module._validate_billing(payload) == "0.00"
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -269,9 +314,7 @@ def test_modal_subprocess_binds_exact_config_and_scrubs_credentials(
         return subprocess.CompletedProcess([], 0, stdout="[]", stderr="")
 
     monkeypatch.setattr(workspace_module.subprocess, "run", run)
-    workspace_module._modal_json(
-        "ratemem-pilot", ["profile", "list"], config_path=config
-    )
+    workspace_module._modal_json("ratemem-pilot", ["profile", "list"], config_path=config)
     assert observed["MODAL_CONFIG_PATH"] == str(config)
     assert observed["MODAL_PROFILE"] == "ratemem-pilot"
     assert "MODAL_TOKEN_ID" not in observed
@@ -327,13 +370,9 @@ def test_modal_json_rejects_duplicate_nonfinite_and_unknown_billing_fields(
     monkeypatch.setattr(workspace_module.subprocess, "run", run)
     config = _private_evidence(tmp_path)
     with pytest.raises(ValueError, match="duplicate"):
-        workspace_module._modal_json(
-            "ratemem-pilot", ["billing", "rates"], config_path=config
-        )
+        workspace_module._modal_json("ratemem-pilot", ["billing", "rates"], config_path=config)
     with pytest.raises(ValueError, match="non-finite"):
-        workspace_module._modal_json(
-            "ratemem-pilot", ["billing", "rates"], config_path=config
-        )
+        workspace_module._modal_json("ratemem-pilot", ["billing", "rates"], config_path=config)
     with pytest.raises(ValueError, match="unknown"):
         workspace_module._validate_billing(
             workspace_module._modal_json(
@@ -353,9 +392,7 @@ def test_verify_fresh_attestation_requeries_profile_metered_usage_and_rates(
     write_exclusive_private_json(attestation, snapshot.to_json())
     fixtures = {
         ("profile", "list"): json.loads((FIXTURES / "profile-list.json").read_text()),
-        ("billing", "summary"): json.loads(
-            (FIXTURES / "billing-summary.json").read_text()
-        ),
+        ("billing", "summary"): json.loads((FIXTURES / "billing-summary.json").read_text()),
         ("billing", "rates"): json.loads((FIXTURES / "rates.json").read_text()),
     }
 

@@ -186,6 +186,49 @@ def _validate_request(request: object) -> dict[str, object]:
     return validated
 
 
+def _validate_fresh_admission(snapshot: object, permit: object) -> None:
+    if type(permit) is not dict:
+        raise TypeError("validated launch permit must be an exact object")
+    checked = cast(dict[str, object], permit)
+    if (
+        getattr(snapshot, "profile", None) != "ratemem-pilot"
+        or getattr(snapshot, "environment", None) != "main"
+        or getattr(snapshot, "workspace", None) != checked.get("workspace")
+    ):
+        raise ValueError("fresh billing identity differs from the launch permit")
+    fresh_rates = getattr(snapshot, "rates", None)
+    if type(fresh_rates) is not dict or set(fresh_rates) != _RATE_KEYS:
+        raise ValueError("fresh Modal rates have missing or unexpected fields")
+    normalized_rates = {
+        name: _positive_rate(fresh_rates[name], f"fresh rate {name}") for name in sorted(_RATE_KEYS)
+    }
+    rates_bytes = json.dumps(
+        normalized_rates,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    if normalized_rates != checked.get("rates") or hashlib.sha256(
+        rates_bytes
+    ).hexdigest() != checked.get("rates_sha256"):
+        raise ValueError("fresh Modal rates differ from the launch permit")
+    fresh_text = getattr(snapshot, "known_metered_usage_usd", None)
+    if type(fresh_text) is not str:
+        raise TypeError("fresh known metered usage must be an exact decimal string")
+    try:
+        fresh_usage = Decimal(fresh_text)
+        before = Decimal(cast(str, checked["known_usage_before_usd"]))
+        phase = Decimal(cast(str, checked["phase_bound_usd"]))
+    except (InvalidOperation, KeyError) as error:
+        raise ValueError("fresh admission cost values are invalid") from error
+    if (
+        not fresh_usage.is_finite()
+        or fresh_usage < before
+        or fresh_usage + phase > Decimal("27.00")
+    ):
+        raise ValueError("fresh usage no longer satisfies the USD 27 admission bound")
+
+
 def _forbidden_credentials() -> list[str]:
     exact = {
         "HF_TOKEN",
@@ -680,14 +723,24 @@ def main() -> None:
     GLOBAL_SUBMISSION_RECEIPT_PATH = one_shot_module.GLOBAL_SUBMISSION_RECEIPT_PATH
     PERMIT_PATH = one_shot_module.PERMIT_PATH
     snapshot = workspace_module.verify_fresh_attestation_file(
-        Path("artifacts/pilot/workspace-attestation.json")
+        Path("artifacts/pilot/workspace-attestation.json"),
+        config_path=Path("/home/ubuntu/.local/share/ratemem/modal/ratemem-pilot.toml"),
     )
+    current_source_sha256 = cli_module.source_tree_sha256()
+    permit = one_shot_module.validate_unsubmitted_launch_permit(
+        PERMIT_PATH,
+        slot=GLOBAL_SLOT_PATH,
+        receipt=GLOBAL_SUBMISSION_RECEIPT_PATH,
+        expected_workspace=snapshot.workspace,
+        current_source_sha256=current_source_sha256,
+    )
+    _validate_fresh_admission(snapshot, permit)
     request = one_shot_module.consume_launch_request(
         PERMIT_PATH,
         slot=GLOBAL_SLOT_PATH,
         receipt=GLOBAL_SUBMISSION_RECEIPT_PATH,
         expected_workspace=snapshot.workspace,
-        current_source_sha256=cli_module.source_tree_sha256(),
+        current_source_sha256=current_source_sha256,
     )
     result = run_first_pilot.remote(request)
     print(json.dumps(result, sort_keys=True))

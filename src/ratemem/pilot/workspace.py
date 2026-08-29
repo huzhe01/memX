@@ -21,7 +21,8 @@ _PROFILE = "ratemem-pilot"
 _ENVIRONMENT = "main"
 _BUDGET = "28.00"
 _CONFIRMATION = (
-    "I confirm the Modal dashboard Workspace usage budget is USD 28.00 before credits."
+    "I confirm the Modal dashboard Workspace usage budget is USD 28.00 before credits "
+    "and the Workspace spend limit is USD 0.00 after credits."
 )
 _RATE_KEYS = {
     "gpu_l40s_per_second",
@@ -96,6 +97,26 @@ def _validate_profiles(value: object) -> tuple[str, str]:
     return active[0]
 
 
+def _billing_map(value: object, name: str, *, signed: bool) -> dict[str, Decimal]:
+    if type(value) is not dict:
+        raise ValueError(f"Modal billing {name} must be an exact object")
+    result: dict[str, Decimal] = {}
+    for key, raw in cast(dict[object, object], value).items():
+        if type(key) is not str or not key or key.strip() != key:
+            raise ValueError(f"Modal billing {name} keys must be canonical strings")
+        if type(raw) is not str:
+            raise TypeError(f"Modal billing {name} values must be exact decimal strings")
+        try:
+            amount = Decimal(raw)
+        except InvalidOperation as error:
+            raise ValueError(f"Modal billing {name} values must be decimal strings") from error
+        if not amount.is_finite() or (not signed and amount < 0):
+            qualifier = "finite" if signed else "finite and nonnegative"
+            raise ValueError(f"Modal billing {name} values must be {qualifier}")
+        result[key] = amount
+    return result
+
+
 def _validate_billing(value: object) -> str:
     expected = {"metered_cost", "billed_cost", "adjustments", "metered_cost_breakdown"}
     if type(value) is not dict or set(cast(dict[object, object], value)) != expected:
@@ -104,26 +125,16 @@ def _validate_billing(value: object) -> str:
     metered = payload["metered_cost"]
     metered_amount = _decimal_text(metered, "metered_cost")
     billed_amount = _decimal_text(payload["billed_cost"], "billed_cost")
-    adjustments = payload["adjustments"]
-    breakdown = payload["metered_cost_breakdown"]
-    if type(adjustments) is not dict or set(cast(dict[object, object], adjustments)) != {"credits"}:
-        raise ValueError("Modal billing adjustments have unknown fields")
-    credits = cast(dict[str, object], adjustments)["credits"]
-    if type(credits) is not str:
-        raise TypeError("Modal credits must be an exact decimal string")
-    try:
-        parsed_credit = Decimal(credits)
-    except InvalidOperation as error:
-        raise ValueError("Modal credits must be a decimal string") from error
-    if not parsed_credit.is_finite() or parsed_credit > 0:
-        raise ValueError("Modal credits must be finite and nonpositive")
-    if type(breakdown) is not dict or set(cast(dict[object, object], breakdown)) != {"compute"}:
-        raise ValueError("Modal metered breakdown has unknown fields")
-    compute = _decimal_text(cast(dict[str, object], breakdown)["compute"], "metered compute")
-    if compute != metered_amount:
-        raise ValueError("Modal compute breakdown must equal metered cost")
-    if billed_amount != metered_amount + parsed_credit:
-        raise ValueError("Modal billed cost must equal metered cost plus credits")
+    adjustments = _billing_map(payload["adjustments"], "adjustments", signed=True)
+    breakdown = _billing_map(
+        payload["metered_cost_breakdown"],
+        "metered cost breakdown",
+        signed=False,
+    )
+    if sum(breakdown.values(), Decimal("0")) != metered_amount:
+        raise ValueError("Modal metered cost breakdown is semantically inconsistent")
+    if billed_amount != metered_amount + sum(adjustments.values(), Decimal("0")):
+        raise ValueError("Modal billed cost is semantically inconsistent with adjustments")
     return cast(str, metered)
 
 
@@ -133,6 +144,7 @@ class OperatorBudgetAttestation:
     workspace: str
     environment: str
     workspace_budget_usd: str
+    workspace_spend_limit_usd: str
     captured_at: datetime
     dashboard_evidence_path: Path
     dashboard_evidence_sha256: str
@@ -149,6 +161,7 @@ class OperatorBudgetAttestation:
             "workspace",
             "environment",
             "workspace_budget_usd",
+            "workspace_spend_limit_usd",
             "captured_at",
             "dashboard_evidence_path",
             "dashboard_evidence_sha256",
@@ -172,6 +185,7 @@ class OperatorBudgetAttestation:
             workspace=cast(str, payload["workspace"]),
             environment=cast(str, payload["environment"]),
             workspace_budget_usd=cast(str, payload["workspace_budget_usd"]),
+            workspace_spend_limit_usd=cast(str, payload["workspace_spend_limit_usd"]),
             captured_at=captured,
             dashboard_evidence_path=dashboard_path,
             dashboard_evidence_sha256=evidence_hash,
@@ -184,6 +198,7 @@ class OperatorBudgetAttestation:
             or self.workspace != expected_workspace
             or self.environment != _ENVIRONMENT
             or self.workspace_budget_usd != _BUDGET
+            or self.workspace_spend_limit_usd != "0.00"
             or self.confirmation_statement != _CONFIRMATION
         ):
             raise ValueError(
@@ -224,9 +239,8 @@ class WorkspaceSnapshot:
             raise TypeError("workspace environment and budget must be exact strings")
         _decimal_text(self.workspace_budget_usd, "workspace budget")
         _decimal_text(self.known_metered_usage_usd, "known metered usage")
-        if (
-            type(self.verified_at) is not datetime
-            or self.verified_at.utcoffset() != UTC.utcoffset(None)
+        if type(self.verified_at) is not datetime or self.verified_at.utcoffset() != UTC.utcoffset(
+            None
         ):
             raise ValueError("verified_at must be a timezone-aware UTC datetime")
         if type(self.evidence_path) is not type(Path()):
@@ -427,10 +441,15 @@ def verify_workspace_snapshot(
     return snapshot
 
 
-def verify_fresh_attestation_file(path: Path) -> WorkspaceSnapshot:
+def verify_fresh_attestation_file(
+    path: Path,
+    *,
+    config_path: Path | None = None,
+) -> WorkspaceSnapshot:
     snapshot = WorkspaceSnapshot.from_json(read_private_json(path))
+    selected_config = Path.home() / ".modal.toml" if config_path is None else config_path
     _profile, selected_workspace = _validate_profiles(
-        _modal_json(_PROFILE, ["profile", "list"])
+        _modal_json(_PROFILE, ["profile", "list"], config_path=selected_config)
     )
     verified = verify_workspace_snapshot(
         snapshot,
@@ -438,9 +457,15 @@ def verify_fresh_attestation_file(path: Path) -> WorkspaceSnapshot:
         max_age_seconds=900,
     )
     metered = _validate_billing(
-        _modal_json(_PROFILE, ["billing", "summary", "--for", "this month"])
+        _modal_json(
+            _PROFILE,
+            ["billing", "summary", "--for", "this month"],
+            config_path=selected_config,
+        )
     )
-    rates = _validate_rates(_modal_json(_PROFILE, ["billing", "rates"]))
+    rates = _validate_rates(
+        _modal_json(_PROFILE, ["billing", "rates"], config_path=selected_config)
+    )
     if Decimal(metered) < Decimal(verified.known_metered_usage_usd):
         raise ValueError("fresh Modal metered usage must be monotonic")
     return replace(verified, known_metered_usage_usd=metered, rates=rates)

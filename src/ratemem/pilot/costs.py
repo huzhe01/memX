@@ -174,6 +174,19 @@ class _LedgerState:
     open_bounds: dict[str, Decimal]
     reservation_known: dict[str, Decimal]
     latest_known_usage: Decimal
+    reservation_bounds: dict[str, Decimal]
+    all_reservation_known: dict[str, Decimal]
+    reconciliations: dict[str, tuple[Decimal, Decimal]]
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptCost:
+    """Authoritative ledger facts for one attempt, including a completed retry."""
+
+    known_usage_before: Decimal
+    phase_bound: Decimal
+    reconciled_cost: Decimal | None
+    known_usage_after: Decimal | None
 
 
 class CostLedger:
@@ -246,7 +259,7 @@ class CostLedger:
             self.path.lstat()
         except FileNotFoundError:
             self._validate_receipts([])
-            return _LedgerState((), frozenset(), {}, {}, Decimal("0"))
+            return _LedgerState((), frozenset(), {}, {}, Decimal("0"), {}, {}, {})
         content = read_private_bytes(self.path)
         if content and not content.endswith(b"\n"):
             raise ValueError("ledger is truncated and lacks a final newline")
@@ -255,6 +268,9 @@ class CostLedger:
         reserved_ids: set[str] = set()
         open_bounds: dict[str, Decimal] = {}
         reservation_known: dict[str, Decimal] = {}
+        reservation_bounds: dict[str, Decimal] = {}
+        all_reservation_known: dict[str, Decimal] = {}
+        reconciliations: dict[str, tuple[Decimal, Decimal]] = {}
         latest_known = Decimal("0")
         for sequence, raw_line in enumerate(content.splitlines()):
             try:
@@ -310,6 +326,8 @@ class CostLedger:
                 reserved_ids.add(attempt)
                 open_bounds[attempt] = bound
                 reservation_known[attempt] = known
+                reservation_bounds[attempt] = bound
+                all_reservation_known[attempt] = known
                 latest_known = known
             elif kind == "reconcile":
                 expected = {
@@ -329,6 +347,7 @@ class CostLedger:
                     raise ValueError("ledger reconciliation is nonmonotonic or inconsistent")
                 open_bounds.pop(attempt)
                 reservation_known.pop(attempt)
+                reconciliations[attempt] = (cost, after)
                 latest_known = max(latest_known, after)
             else:
                 raise ValueError("ledger entry kind is invalid")
@@ -342,7 +361,78 @@ class CostLedger:
             open_bounds,
             reservation_known,
             latest_known,
+            reservation_bounds,
+            all_reservation_known,
+            reconciliations,
         )
+
+    def _validate_reservation_unlocked(
+        self,
+        state: _LedgerState,
+        attempt_id: str,
+        *,
+        known_usage: Decimal,
+        phase_bound: Decimal,
+        rates_sha256: str,
+    ) -> Decimal:
+        if type(attempt_id) is not str or not attempt_id:
+            raise ValueError("attempt_id must be a nonempty exact string")
+        known = _require_decimal(known_usage, "known_usage")
+        bound = _require_decimal(phase_bound, "phase_bound", positive=True)
+        _lower_sha(rates_sha256, "rates_sha256")
+        if attempt_id in state.reserved_ids:
+            raise ValueError("attempt already has a reservation")
+        if known < state.latest_known_usage:
+            raise ValueError("known metered usage must not decrease; monotonic evidence required")
+        pending = sum(state.open_bounds.values(), Decimal("0"))
+        if known + pending + bound > self.internal_limit_usd:
+            raise ValueError("launch would exceed the internal USD 27.00 limit")
+        return pending
+
+    def preview_reservation(
+        self,
+        attempt_id: str,
+        *,
+        known_usage: Decimal,
+        phase_bound: Decimal,
+        rates_sha256: str,
+    ) -> Decimal:
+        """Validate admission without appending; return currently open worst-case cost."""
+
+        with private_lock(self.lock_path):
+            state = self._state_unlocked()
+            return self._validate_reservation_unlocked(
+                state,
+                attempt_id,
+                known_usage=known_usage,
+                phase_bound=phase_bound,
+                rates_sha256=rates_sha256,
+            )
+
+    def require_pristine(self) -> None:
+        """Reject a ledger that has ever admitted an attempt, open or reconciled."""
+
+        with private_lock(self.lock_path):
+            state = self._state_unlocked()
+            if state.reserved_ids:
+                raise ValueError("the one-shot pilot ledger contains a prior reservation")
+
+    def attempt_cost(self, attempt_id: str) -> AttemptCost | None:
+        """Read one reservation and any durable reconciliation under the ledger lock."""
+
+        if type(attempt_id) is not str or not attempt_id:
+            raise ValueError("attempt_id must be a nonempty exact string")
+        with private_lock(self.lock_path):
+            state = self._state_unlocked()
+            if attempt_id not in state.reserved_ids:
+                return None
+            reconciliation = state.reconciliations.get(attempt_id)
+            return AttemptCost(
+                known_usage_before=state.all_reservation_known[attempt_id],
+                phase_bound=state.reservation_bounds[attempt_id],
+                reconciled_cost=None if reconciliation is None else reconciliation[0],
+                known_usage_after=None if reconciliation is None else reconciliation[1],
+            )
 
     def _append_unlocked(self, state: _LedgerState, body: dict[str, Any]) -> None:
         previous = state.entries[-1]["entry_sha256"] if state.entries else _ZERO_HASH
@@ -366,22 +456,18 @@ class CostLedger:
         phase_bound: Decimal,
         rates_sha256: str,
     ) -> None:
-        if type(attempt_id) is not str or not attempt_id:
-            raise ValueError("attempt_id must be a nonempty exact string")
         known = _require_decimal(known_usage, "known_usage")
         bound = _require_decimal(phase_bound, "phase_bound", positive=True)
         rate_hash = _lower_sha(rates_sha256, "rates_sha256")
         with private_lock(self.lock_path):
             state = self._state_unlocked()
-            if attempt_id in state.reserved_ids:
-                raise ValueError("attempt already has a reservation")
-            if known < state.latest_known_usage:
-                raise ValueError(
-                    "known metered usage must not decrease; monotonic evidence required"
-                )
-            pending = sum(state.open_bounds.values(), Decimal("0"))
-            if known + pending + bound > self.internal_limit_usd:
-                raise ValueError("launch would exceed the internal USD 27.00 limit")
+            pending = self._validate_reservation_unlocked(
+                state,
+                attempt_id,
+                known_usage=known,
+                phase_bound=bound,
+                rates_sha256=rate_hash,
+            )
             self._append_unlocked(
                 state,
                 {
@@ -409,6 +495,11 @@ class CostLedger:
         with private_lock(self.lock_path):
             state = self._state_unlocked()
             if attempt_id not in state.open_bounds:
+                prior = state.reconciliations.get(attempt_id)
+                if prior == (cost, after):
+                    return
+                if prior is not None:
+                    raise ValueError("attempt already has a different reconciliation")
                 raise ValueError("attempt must have exactly one open reservation")
             before = state.reservation_known[attempt_id]
             if after < before:

@@ -209,7 +209,121 @@ def test_local_entrypoint_rechecks_environment_and_consumes_before_remote() -> N
     assert "GLOBAL_SUBMISSION_RECEIPT_PATH" in source
     assert 'os.environ.get("MODAL_ENVIRONMENT")' in source
     assert "permit_path" not in source
-    assert source.index("consume_launch_request(") < source.index("run_first_pilot.remote(")
+    validate = source.index("validate_unsubmitted_launch_permit(")
+    fresh = source.index("_validate_fresh_admission(snapshot, permit)")
+    consume = source.index("consume_launch_request(")
+    remote = source.index("run_first_pilot.remote(")
+    assert validate < fresh < consume < remote
+    assert "/home/ubuntu/.local/share/ratemem/modal/ratemem-pilot.toml" in source
+
+
+@pytest.mark.parametrize(
+    ("usage", "mutate_rates", "message"),
+    [
+        ("1.24", False, "USD 27 admission"),
+        ("16.86", False, "USD 27 admission"),
+        ("1.25", True, "rates differ"),
+    ],
+)
+def test_local_entrypoint_rejects_fresh_billing_drift_before_consume_or_remote(
+    monkeypatch: pytest.MonkeyPatch,
+    usage: str,
+    mutate_rates: bool,
+    message: str,
+) -> None:
+    module = _load_with_fake_modal(monkeypatch)
+    permit = _request()
+    rates = dict(permit["rates"])  # type: ignore[arg-type]
+    if mutate_rates:
+        rates["gpu_l40s_per_second"] = "0.000543"
+    snapshot = types.SimpleNamespace(
+        profile="ratemem-pilot",
+        workspace="workspace",
+        environment="main",
+        known_metered_usage_usd=usage,
+        rates=rates,
+    )
+    events: list[str] = []
+    one_shot = types.SimpleNamespace(
+        GLOBAL_SLOT_PATH=Path("state/modal-pilot-slot.json"),
+        GLOBAL_SUBMISSION_RECEIPT_PATH=Path("state/modal-pilot-submitted.json"),
+        PERMIT_PATH=Path("artifacts/pilot/launch-permit.json"),
+        validate_unsubmitted_launch_permit=lambda *_args, **_kwargs: permit,
+        consume_launch_request=lambda *_args, **_kwargs: events.append("consume"),
+    )
+    workspace = types.SimpleNamespace(
+        verify_fresh_attestation_file=lambda *_args, **_kwargs: snapshot
+    )
+    cli = types.SimpleNamespace(source_tree_sha256=lambda: permit["source_sha256"])
+    real_import = module.importlib.import_module
+
+    def fake_import(name: str) -> object:
+        selected = {
+            "ratemem.pilot.cli": cli,
+            "ratemem.pilot.one_shot": one_shot,
+            "ratemem.pilot.workspace": workspace,
+        }.get(name)
+        return real_import(name) if selected is None else selected
+
+    monkeypatch.setattr(module.importlib, "import_module", fake_import)
+    module.run_first_pilot = types.SimpleNamespace(remote=lambda _request: events.append("remote"))
+    monkeypatch.setenv("MODAL_PROFILE", "ratemem-pilot")
+    monkeypatch.setenv("MODAL_ENVIRONMENT", "main")
+
+    with pytest.raises(ValueError, match=message):
+        module.main()
+    assert events == []
+
+
+def test_local_entrypoint_accepts_exact_fresh_admission_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_with_fake_modal(monkeypatch)
+    permit = _request()
+    snapshot = types.SimpleNamespace(
+        profile="ratemem-pilot",
+        workspace="workspace",
+        environment="main",
+        known_metered_usage_usd="16.85",
+        rates=dict(permit["rates"]),  # type: ignore[arg-type]
+    )
+    events: list[str] = []
+
+    def consume(*_args: object, **_kwargs: object) -> dict[str, object]:
+        events.append("consume")
+        return permit
+
+    one_shot = types.SimpleNamespace(
+        GLOBAL_SLOT_PATH=Path("state/modal-pilot-slot.json"),
+        GLOBAL_SUBMISSION_RECEIPT_PATH=Path("state/modal-pilot-submitted.json"),
+        PERMIT_PATH=Path("artifacts/pilot/launch-permit.json"),
+        validate_unsubmitted_launch_permit=lambda *_args, **_kwargs: permit,
+        consume_launch_request=consume,
+    )
+    modules = {
+        "ratemem.pilot.cli": types.SimpleNamespace(
+            source_tree_sha256=lambda: permit["source_sha256"]
+        ),
+        "ratemem.pilot.one_shot": one_shot,
+        "ratemem.pilot.workspace": types.SimpleNamespace(
+            verify_fresh_attestation_file=lambda *_args, **_kwargs: snapshot
+        ),
+    }
+    real_import = module.importlib.import_module
+
+    def fake_import(name: str) -> object:
+        selected = modules.get(name)
+        return real_import(name) if selected is None else selected
+
+    monkeypatch.setattr(module.importlib, "import_module", fake_import)
+    module.run_first_pilot = types.SimpleNamespace(
+        remote=lambda _request: events.append("remote") or {"status": "ok"}
+    )
+    monkeypatch.setenv("MODAL_PROFILE", "ratemem-pilot")
+    monkeypatch.setenv("MODAL_ENVIRONMENT", "main")
+
+    module.main()
+    assert events == ["consume", "remote"]
 
 
 def test_each_execution_commits_one_create_only_receipt(

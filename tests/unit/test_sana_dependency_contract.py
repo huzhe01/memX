@@ -6,9 +6,7 @@ import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 PYPROJECT_PATH = REPOSITORY / "pyproject.toml"
-SANA_PLAN_PATH = (
-    REPOSITORY / "docs/superpowers/plans/2026-08-24-ratemem-sana-modal-pilot.md"
-)
+SANA_PLAN_PATH = REPOSITORY / "docs/superpowers/plans/2026-08-24-ratemem-sana-modal-pilot.md"
 
 EXPECTED_DEFAULT_VERSIONS = {
     "accelerate": "1.14.0",
@@ -44,18 +42,12 @@ def _project_metadata() -> dict[str, object]:
 
 def _exact_pins(requirements: list[str]) -> dict[str, str]:
     return dict(
-        requirement.split("==", maxsplit=1)
-        for requirement in requirements
-        if "==" in requirement
+        requirement.split("==", maxsplit=1) for requirement in requirements if "==" in requirement
     )
 
 
-@pytest.mark.parametrize(
-    ("distribution", "expected"), EXPECTED_DEFAULT_VERSIONS.items()
-)
-def test_default_sana_dependency_has_exact_version(
-    distribution: str, expected: str
-) -> None:
+@pytest.mark.parametrize(("distribution", "expected"), EXPECTED_DEFAULT_VERSIONS.items())
+def test_default_sana_dependency_has_exact_version(distribution: str, expected: str) -> None:
     assert _installed_version(distribution) == expected
 
 
@@ -72,8 +64,7 @@ def test_default_dependency_metadata_uses_the_locked_versions() -> None:
     project = _project_metadata()
     default_pins = _exact_pins(project["dependencies"])
     assert {
-        distribution: default_pins[distribution]
-        for distribution in EXPECTED_DEFAULT_VERSIONS
+        distribution: default_pins[distribution] for distribution in EXPECTED_DEFAULT_VERSIONS
     } == EXPECTED_DEFAULT_VERSIONS
 
 
@@ -89,17 +80,14 @@ def test_installed_modal_extra_has_exact_version() -> None:
     assert _installed_version("modal") == EXPECTED_MODAL_VERSION
 
 
-def test_pilot_entry_point_is_deferred_to_task_13() -> None:
+def test_pilot_entry_point_is_registered_only_after_task_13_target_exists() -> None:
     project = _project_metadata()
-    assert "ratemem-pilot" not in project["scripts"]
+    assert project["scripts"]["ratemem-pilot"] == "ratemem.pilot.cli:main"
+    assert Path("src/ratemem/pilot/cli.py").is_file()
 
     plan = SANA_PLAN_PATH.read_text(encoding="utf-8")
-    task_one = plan.split("### Task 1:", maxsplit=1)[1].split(
-        "### Task 2:", maxsplit=1
-    )[0]
-    task_thirteen = plan.split("### Task 13:", maxsplit=1)[1].split(
-        "### Task 14:", maxsplit=1
-    )[0]
+    task_one = plan.split("### Task 1:", maxsplit=1)[1].split("### Task 2:", maxsplit=1)[0]
+    task_thirteen = plan.split("### Task 13:", maxsplit=1)[1].split("### Task 14:", maxsplit=1)[0]
     assert 'ratemem-pilot = "ratemem.pilot.cli:main"' not in task_one
     assert 'ratemem-pilot = "ratemem.pilot.cli:main"' in task_thirteen
     assert "uv run ratemem-pilot --help" in task_thirteen
@@ -135,9 +123,7 @@ def test_sana_plan_uses_the_locked_dependency_versions() -> None:
 
 def test_sana_plan_defines_an_offline_safe_hub_loading_contract() -> None:
     plan = SANA_PLAN_PATH.read_text(encoding="utf-8")
-    task_four = plan.split("### Task 4:", maxsplit=1)[1].split(
-        "### Task 5:", maxsplit=1
-    )[0]
+    task_four = plan.split("### Task 4:", maxsplit=1)[1].split("### Task 5:", maxsplit=1)[0]
     assert "no network" in task_four.lower()
     assert "use_safetensors=True" in task_four
     assert "trust_remote_code=False" in task_four

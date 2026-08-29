@@ -989,6 +989,7 @@ class RealSanaPilotBackend:
         return {
             "scope": "engineering_pilot_only",
             "inference_seconds": self._inference_seconds,
+            "standalone_backward_loss": None if backward is None else backward.loss,
             "peak_allocated_bytes": self._peak.allocated_bytes,
             "peak_reserved_bytes": self._peak.reserved_bytes,
             "standalone_backward_transformer_passes": (
@@ -1670,6 +1671,7 @@ def run_real_pilot(
     diagnostics: dict[str, object] = {
         "scope": "engineering_pilot_only",
         "backend_initialized": backend is not None,
+        "standalone_backward_loss": None,
         "execution_receipt_semantic_invalid": receipt_semantic_invalid,
         "execution_receipt_evidence": (
             "external_forensic_directory"
@@ -1689,6 +1691,7 @@ def run_real_pilot(
                 diagnostic_value
                 | diagnostics
                 | {
+                    "standalone_backward_loss": diagnostic_value.get("standalone_backward_loss"),
                     "peak_allocated_bytes": peak.allocated_bytes,
                     "peak_reserved_bytes": peak.reserved_bytes,
                 }

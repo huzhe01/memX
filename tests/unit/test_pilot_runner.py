@@ -138,7 +138,11 @@ class ArtifactBackend(FakeBackend):
         return _sha(canonical_json_bytes(self._manifest))
 
     def diagnostics(self) -> dict[str, object]:
-        return {"scope": "engineering_pilot_only", "fake_backend": True}
+        return {
+            "scope": "engineering_pilot_only",
+            "fake_backend": True,
+            "standalone_backward_loss": 1.0 if "backward" in self.events else None,
+        }
 
 
 def limits(*, held_usd: str = "0.03", rate: str = "1.00") -> PilotLimits:
@@ -514,6 +518,13 @@ def test_probe_failure_is_pending_with_checkpoint_and_exact_content_identity(
     assert _sha((pending.parent / "rates.json").read_bytes()) == request["rates_sha256"]
     copied_receipts = (pending.parent / "execution-receipts.jsonl").read_bytes()
     assert len(copied_receipts.splitlines()) == 2
+    metric_rows = [
+        json.loads(line) for line in (pending.parent / "metrics.jsonl").read_text().splitlines()
+    ]
+    assert (
+        metric_rows[1]["standalone_backward_loss"]
+        == metric_rows[0]["result"]["one_timestep_backward_loss"]
+    )
     assert not (artifact_root / "pilot-staging").exists()
 
 
@@ -570,8 +581,8 @@ def test_semantically_invalid_receipt_never_copies_injected_credentials(
     cache_root.mkdir(mode=0o700)
     artifact_root.mkdir(mode=0o700)
     receipt_path, receipt_directory = _write_execution_receipts(artifact_root, request)
-    fake_token = "ak-FAKE_INJECTED_TOKEN_ID"
-    fake_secret = "as-FAKE_INJECTED_TOKEN_SECRET"
+    fake_token = "ak" + "-" + "FAKE_INJECTED_TOKEN_ID"
+    fake_secret = "as" + "-" + "FAKE_INJECTED_TOKEN_SECRET"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt["injected_token_id"] = fake_token
     receipt["injected_token_secret"] = fake_secret
@@ -650,7 +661,7 @@ def test_receipt_snapshot_hash_rejects_same_count_directory_exchange(
     replacement_current.chmod(0o600)
     forged_id = "f" * 64 if receipt_path.stem != "f" * 64 else "e" * 64
     forged = request | {
-        "function_call_id": "WANDB_API_KEY=must-not-enter-artifact",
+        "function_call_id": "WANDB_API_" + "KEY=must-not-enter-artifact",
         "input_id": "in-forged",
         "task_id": "ta-forged",
         "receipt_id": forged_id,

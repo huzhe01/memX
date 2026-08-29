@@ -172,12 +172,11 @@ def test_reconcile_requires_open_reservation_and_fresh_metered_usage(tmp_path: P
         reconciled_cost=Decimal("0.50"),
         known_usage_after=Decimal("2.50"),
     )
-    with pytest.raises(ValueError, match="open reservation"):
-        ledger.reconcile(
-            "attempt-one",
-            reconciled_cost=Decimal("0.50"),
-            known_usage_after=Decimal("2.50"),
-        )
+    ledger.reconcile(
+        "attempt-one",
+        reconciled_cost=Decimal("0.50"),
+        known_usage_after=Decimal("2.50"),
+    )
     ledger.verify_hash_chain()
 
 
@@ -272,6 +271,8 @@ def test_receipt_publication_crash_poisons_future_ledger_use(
     monkeypatch.undo()
     with pytest.raises(ValueError, match="receipt.*missing|interrupted"):
         ledger.verify_hash_chain()
+
+
 def test_append_failure_does_not_claim_a_successful_reservation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -303,3 +304,91 @@ def test_ledger_file_and_lock_are_private(tmp_path: Path) -> None:
     assert ledger.path.stat().st_mode & 0o777 == 0o600
     assert ledger.lock_path.stat().st_mode & 0o777 == 0o600
     json.loads(ledger.path.read_text().splitlines()[0])
+
+
+def test_reservation_preview_is_read_only_and_reports_existing_pending(tmp_path: Path) -> None:
+    ledger = CostLedger(tmp_path / "private" / "ledger.jsonl", internal_limit_usd=Decimal("27.00"))
+    assert ledger.preview_reservation(
+        "attempt-one",
+        known_usage=Decimal("1.00"),
+        phase_bound=Decimal("20.00"),
+        rates_sha256="1" * 64,
+    ) == Decimal("0")
+    assert not ledger.path.exists()
+    ledger.reserve(
+        "attempt-one",
+        known_usage=Decimal("1.00"),
+        phase_bound=Decimal("20.00"),
+        rates_sha256="1" * 64,
+    )
+    assert ledger.preview_reservation(
+        "attempt-two",
+        known_usage=Decimal("1.00"),
+        phase_bound=Decimal("6.00"),
+        rates_sha256="2" * 64,
+    ) == Decimal("20.00")
+    with pytest.raises(ValueError, match="USD 27.00"):
+        ledger.preview_reservation(
+            "attempt-three",
+            known_usage=Decimal("1.00"),
+            phase_bound=Decimal("6.01"),
+            rates_sha256="3" * 64,
+        )
+
+
+def test_reconciliation_record_is_readable_and_exact_retry_is_idempotent(tmp_path: Path) -> None:
+    ledger = CostLedger(tmp_path / "private" / "ledger.jsonl", internal_limit_usd=Decimal("27.00"))
+    ledger.reserve(
+        "attempt-one",
+        known_usage=Decimal("2.00"),
+        phase_bound=Decimal("3.00"),
+        rates_sha256="1" * 64,
+    )
+    reservation = ledger.attempt_cost("attempt-one")
+    assert reservation is not None
+    assert reservation.known_usage_before == Decimal("2.00")
+    assert reservation.phase_bound == Decimal("3.00")
+    assert reservation.reconciled_cost is None
+    ledger.reconcile(
+        "attempt-one",
+        reconciled_cost=Decimal("0.50"),
+        known_usage_after=Decimal("2.50"),
+    )
+    before = ledger.path.read_bytes()
+    ledger.reconcile(
+        "attempt-one",
+        reconciled_cost=Decimal("0.50"),
+        known_usage_after=Decimal("2.50"),
+    )
+    assert ledger.path.read_bytes() == before
+    reconciled = ledger.attempt_cost("attempt-one")
+    assert reconciled is not None
+    assert reconciled.reconciled_cost == Decimal("0.50")
+    assert reconciled.known_usage_after == Decimal("2.50")
+    with pytest.raises(ValueError, match="different reconciliation"):
+        ledger.reconcile(
+            "attempt-one",
+            reconciled_cost=Decimal("0.51"),
+            known_usage_after=Decimal("2.51"),
+        )
+
+
+def test_pristine_guard_rejects_any_prior_reservation_even_after_reconciliation(
+    tmp_path: Path,
+) -> None:
+    ledger = CostLedger(tmp_path / "private" / "ledger.jsonl", internal_limit_usd=Decimal("27.00"))
+    ledger.require_pristine()
+    ledger.reserve(
+        "attempt-one",
+        known_usage=Decimal("1.00"),
+        phase_bound=Decimal("2.00"),
+        rates_sha256="1" * 64,
+    )
+    ledger.reconcile(
+        "attempt-one",
+        reconciled_cost=Decimal("0.50"),
+        known_usage_after=Decimal("1.50"),
+    )
+
+    with pytest.raises(ValueError, match="prior reservation"):
+        ledger.require_pristine()
