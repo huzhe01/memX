@@ -885,7 +885,21 @@ git commit -m "feat: pin and load sana components offline"
 - Create: `tests/unit/test_support_features.py`
 - Create: `tests/unit/test_support_amortizer.py`
 
-- [ ] **Step 1: Write support-feature and set-order contracts**
+> **Implementation reconciliation (complete):** The snippets below are the
+> original RED sketch; the executable 101-test contract is normative. The
+> final implementation adds an immutable, hashed amortizer architecture
+> identity; complete behavioral-topology validation; exact FP32/device/
+> trainability/finite-state checks; coefficients-only and tiny-SANA Bank
+> gradient proofs; explicit permutation-invariant multiset semantics; and
+> inference-safe cache tensors. Frozen DINO encoding snapshots recursive
+> modules, parameters, buffers, storage, tensor versions, values, and mode
+> before any processor/config getter, then revalidates in `finally` on both
+> success and failure. A real local `BitImageProcessor` normalization path is
+> covered without network access. Identity-based topology validation
+> deliberately supports reconstruction plus strict state loading rather than
+> deepcopy/full-module pickle interchange.
+
+- [x] **Step 1: Write support-feature and set-order contracts**
 
 ```python
 # tests/unit/test_support_amortizer.py
@@ -971,13 +985,13 @@ def test_frozen_encoder_contract_rejects_trainable_weight() -> None:
         raise AssertionError("trainable support encoder was accepted")
 ```
 
-- [ ] **Step 2: Run the support tests and observe missing modules**
+- [x] **Step 2: Run the support tests and observe missing modules**
 
 Run: `uv run pytest tests/unit/test_support_amortizer.py tests/unit/test_support_features.py -q`
 
 Expected: collection fails because the support modules do not exist.
 
-- [ ] **Step 3: Implement frozen image/description feature helpers**
+- [x] **Step 3: Implement frozen image/description feature helpers**
 
 ```python
 # src/ratemem/support/features.py
@@ -1014,7 +1028,7 @@ def masked_mean_description(token_features: Tensor, attention_mask: Tensor) -> T
     return (token_features.float() * weights.float()).sum(dim=1) / denominator.float()
 ```
 
-- [ ] **Step 4: Implement the Set Transformer amortizer with positive scales**
+- [x] **Step 4: Implement the Set Transformer amortizer with positive scales**
 
 ```python
 # src/ratemem/support/amortizer.py
@@ -1087,16 +1101,16 @@ class SupportAmortizer(nn.Module):
         return AdapterPrediction(logits=logits, scales=scales, coefficients=coefficients)
 ```
 
-- [ ] **Step 5: Run the support contracts**
+- [x] **Step 5: Run the support contracts**
 
 Run: `uv run pytest tests/unit/test_support_amortizer.py tests/unit/test_support_features.py -q`
 
-Expected: `5 passed`; permuting valid support tokens leaves coefficients unchanged within tolerance.
+Expected: `101 passed`; permuting valid support tokens leaves coefficients unchanged within tolerance.
 
-- [ ] **Step 6: Commit the support-to-code path**
+- [x] **Step 6: Commit the support-to-code path**
 
 ```bash
-git add src/ratemem/support/features.py src/ratemem/support/amortizer.py tests/unit/test_support_features.py tests/unit/test_support_amortizer.py
+git add src/ratemem/support/features.py src/ratemem/support/amortizer.py tests/unit/test_support_features.py tests/unit/test_support_amortizer.py docs/superpowers/plans/2026-08-24-ratemem-sana-modal-pilot.md
 git commit -m "feat: add permutation invariant support amortizer"
 ```
 
