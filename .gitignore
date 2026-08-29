@@ -6,3 +6,11 @@ __pycache__/
 *.py[cod]
 /artifacts/
 data/cache/
+.env
+.env.*
+*.pem
+*.key
+.modal.toml
+artifacts/pilot/
+hf-cache/
+wandb/
