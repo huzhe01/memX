@@ -6,7 +6,7 @@
 
 **Architecture:** A new Python 3.11 `ratemem` package wraps only SANA q/k/v projections with contract-tested low-rank atom modules, predicts per-example coefficients from frozen support and description features, and trains the atoms plus amortizer through exactly one random flow-matching timestep per query. A separate pilot layer owns immutable pins, held-in Subjects200K preprocessing, artifact validation, workspace attestation, Decimal cost reservations, and a single synchronous Modal call. Private mode-0700 state directories and mode-0600 immutable files hold one global slot, one launch permit, and one `O_EXCL` submission receipt whose attempt ID, workspace, and source hash must match exactly before `.remote()`; the pilot CLI exposes no scientific-evaluation, deployment, fan-out, fallback-GPU, or publication path.
 
-**Tech Stack:** Python 3.11, uv, PyTorch 2.8, Diffusers 0.35.1, PEFT 0.17.1, Transformers 4.56.1, Hugging Face Hub/Datasets, safetensors, JSON Schema Draft 2020-12, Typer, pytest, Modal 1.5.4, NVIDIA L40S/BF16.
+**Tech Stack:** Python 3.11, uv, PyTorch 2.13.0, Torchvision 0.28.0, Diffusers 0.40.0, PEFT 0.20.0, Transformers 5.16.1, Hugging Face Hub/Datasets, safetensors, JSON Schema Draft 2020-12, Typer, pytest 9.0.3, Modal 1.5.4, NVIDIA L40S/BF16.
 
 ---
 
@@ -36,7 +36,7 @@ The launch contract is exactly one synchronous `.remote()` submission. Modal may
 The legacy TensorFlow files remain untouched. Add the modern implementation as a separate package:
 
 - `.gitignore` — extends the core ignore rules with pilot caches, credentials, downloaded data, and generated artifacts.
-- `pyproject.toml` — extends the core Python 3.11/uv project with compatible exact SANA pins, pilot markers, and the `ratemem-pilot` entry point without removing core dependencies or scripts.
+- `pyproject.toml` — extends the core Python 3.11/uv project with compatible exact SANA pins and pilot markers without removing core dependencies or scripts; Task 13 adds the pilot entry point only when its target module exists.
 - `uv.lock` — updates the core resolved graph and is reused unchanged inside the Modal image.
 - `configs/pilot/sana-1.5-1.6b.json` — immutable model/support-encoder revisions and the 20x2x3x4 adapter layout.
 - `configs/pilot/subjects200k-held-in.json` — immutable dataset revision, composite-image geometry, and rows 0--7.
@@ -87,51 +87,70 @@ Run: `sed -n '1,260p' pyproject.toml && sed -n '1,220p' .gitignore && uv tree --
 
 Expected: the existing project targets Python 3.11 and already contains the core dependencies, scripts, pytest settings, and package layout. Record the existing `[project]`, `[project.scripts]`, `[dependency-groups]`, and pytest marker entries so the following merge preserves every one of them.
 
-- [ ] **Step 2: Add a dependency contract test before changing the lock**
+- [ ] **Step 2: Add default-versus-extra dependency contract tests before changing the lock**
 
 ```python
-# tests/unit/test_sana_dependency_contract.py
-from importlib.metadata import version
+# tests/unit/test_sana_dependency_contract.py (essential contract)
+from importlib.metadata import PackageNotFoundError, version
+
+import pytest
 
 
-def test_sana_pilot_dependency_versions_are_locked() -> None:
-    expected = {
-        "accelerate": "1.10.1",
-        "datasets": "4.1.1",
-        "diffusers": "0.35.1",
-        "huggingface-hub": "0.34.4",
-        "modal": "1.5.4",
-        "peft": "0.17.1",
-        "safetensors": "0.6.2",
-        "torch": "2.8.0",
-        "torchvision": "0.23.0",
-        "transformers": "4.56.1",
-    }
-    assert {distribution: version(distribution) for distribution in expected} == expected
+DEFAULT_EXPECTED = {
+    "accelerate": "1.14.0",
+    "cbor2": "6.1.4",
+    "datasets": "5.0.1",
+    "diffusers": "0.40.0",
+    "filelock": "3.32.4",
+    "huggingface-hub": "1.29.0",
+    "jsonschema": "4.26.0",
+    "peft": "0.20.0",
+    "pillow": "12.3.0",
+    "safetensors": "0.8.0",
+    "torch": "2.13.0",
+    "torchvision": "0.28.0",
+    "transformers": "5.16.1",
+    "typer": "0.27.2",
+}
+
+
+def installed(distribution: str) -> str | None:
+    try:
+        return version(distribution)
+    except PackageNotFoundError:
+        return None
+
+
+@pytest.mark.parametrize(("distribution", "expected"), DEFAULT_EXPECTED.items())
+def test_default_sana_dependency_has_exact_version(distribution: str, expected: str) -> None:
+    assert installed(distribution) == expected
+
+
+@pytest.mark.skipif(installed("modal") is None, reason="install the Modal extra")
+def test_installed_modal_extra_has_exact_version() -> None:
+    assert installed("modal") == "1.5.4"
 ```
+
+Also parse `pyproject.toml` with `tomllib` and assert that Modal is absent from default dependencies, present exactly once under the `modal` optional dependency, and that the pilot script is not registered before Task 13 creates its target module.
 
 - [ ] **Step 3: Run the dependency contract and confirm the pilot stack is not installed yet**
 
 Run: `uv run pytest tests/unit/test_sana_dependency_contract.py -q`
 
-Expected: FAIL on at least one missing distribution or version mismatch before the SANA dependencies are merged.
+Expected: FAIL on at least one missing distribution or version mismatch before the SANA dependencies are merged. After an ordinary default sync, the Modal-specific runtime assertion must skip rather than fail.
 
 - [ ] **Step 4: Merge exact SANA dependencies without replacing core configuration**
 
 Run these additive uv commands from the repository root:
 
 ```bash
-uv add accelerate==1.10.1 datasets==4.1.1 diffusers==0.35.1 huggingface-hub==0.34.4 peft==0.17.1 pillow==11.3.0 safetensors==0.6.2 torch==2.8.0 torchvision==0.23.0 transformers==4.56.1
+uv add accelerate==1.14.0 cbor2==6.1.4 datasets==5.0.1 diffusers==0.40.0 huggingface-hub==1.29.0 peft==0.20.0 pillow==12.3.0 safetensors==0.8.0 torch==2.13.0 torchvision==0.28.0 transformers==5.16.1
 uv add --optional modal modal==1.5.4
-uv add filelock==3.19.1 jsonschema==4.25.1 typer==0.16.1
+uv add filelock==3.32.4 jsonschema==4.26.0 typer==0.27.2
+uv add --dev pytest==9.0.3
 ```
 
-These commands update existing dependency arrays in place. Do not delete or repin the core plan's `cbor2`, Pydantic, PyYAML, or Hypothesis dependencies, do not replace existing `[project.scripts]` entries, and do not rewrite the core Ruff, mypy, build-backend, or pytest settings. Add only this script entry alongside the core scripts:
-
-```toml
-[project.scripts]
-ratemem-pilot = "ratemem.pilot.cli:main"
-```
+These commands update existing dependency arrays in place. The `cbor2` pin is deliberately raised because the previous core pin is affected by GHSA-3c37-wwvx-h642; run the core canonical-CBOR byte contracts after the upgrade. Do not delete or repin the core plan's Pydantic, PyYAML, or Hypothesis dependencies, do not replace existing `[project.scripts]` entries, and do not rewrite the core Ruff, mypy, build-backend, or pytest settings. Do not register the pilot script in Task 1: its CLI module does not exist until Task 13.
 
 Append only absent pytest markers to the existing marker list:
 
@@ -161,17 +180,25 @@ hf-cache/
 wandb/
 ```
 
-- [ ] **Step 6: Sync from the merged lock and run the dependency contract**
+- [ ] **Step 6: Verify both the ordinary default environment and the explicit Modal extra**
 
-Run: `uv sync --extra modal --all-groups --frozen && uv run pytest tests/unit/test_sana_dependency_contract.py -q`
+Run:
 
-Expected: exit 0 and `1 passed`. `uv tree --depth 1` still lists the core dependencies plus the exact SANA/Modal versions; it contains only one resolved Torch/Diffusers/Transformers version each.
+```bash
+uv sync --frozen --all-groups
+uv run --frozen pytest tests/unit/test_sana_dependency_contract.py -q
+uv sync --frozen --all-groups --extra modal
+uv run --frozen --extra modal pytest tests/unit/test_sana_dependency_contract.py -q
+uv sync --frozen --all-groups
+```
+
+Expected: both test runs exit 0. The default run skips only the installed-Modal assertion and never requires Modal; the extra run exercises it at 1.5.4. The final default sync removes Modal again. `uv tree --depth 1` lists one resolved Torch/Diffusers/Transformers version each, and Torch 2.13.0 is paired exactly with Torchvision 0.28.0.
 
 - [ ] **Step 7: Run the pre-existing core suite to catch shared-file regressions**
 
-Run: `uv run pytest -q`
+Run: `uv run pytest tests/codec tests/state/test_serialization.py -q && uv run pytest -q`
 
-Expected: every core test still passes and only tests explicitly marked for CUDA, a real checkpoint, or paid Modal are skipped.
+Expected: the canonical-CBOR and serialization byte contracts pass under cbor2 6.1.4; every core test still passes and only tests explicitly marked for CUDA, a real checkpoint, or paid Modal are skipped.
 
 - [ ] **Step 8: Commit only the additive environment delta**
 
@@ -851,7 +878,9 @@ Run: `uv run pytest tests/unit/test_pilot_config.py -q`
 
 Expected: `2 passed`.
 
-- [ ] **Step 6: Write loader tests that prove every remote read receives a revision**
+- [ ] **Step 6: Write a no-network safe-loading contract for every Hub read**
+
+This unit layer performs no network access: every `from_pretrained` boundary is patched before `load_pinned_components()` is called. It proves full commit revisions, `use_safetensors=True` for every weight-bearing loader, explicit `trust_remote_code=False` for Transformers auto loaders, and the absence of any Diffusers `custom_pipeline`/dynamic pipeline path.
 
 ```python
 # tests/unit/test_sana_components.py
@@ -872,7 +901,7 @@ from ratemem.sana.components import load_pinned_components
 @patch("ratemem.sana.components.SanaTransformer2DModel.from_pretrained")
 @patch("ratemem.sana.components.FlowMatchEulerDiscreteScheduler.from_pretrained")
 @patch("ratemem.sana.components.DPMSolverMultistepScheduler.from_pretrained")
-def test_all_hub_loads_are_revision_pinned(
+def test_all_hub_loads_are_revision_pinned_and_safe(
     inference_scheduler: Mock,
     training_scheduler: Mock,
     transformer: Mock,
@@ -894,6 +923,15 @@ def test_all_hub_loads_are_revision_pinned(
         assert mock.call_args.kwargs["revision"] == config.revision
     for mock in support_loaders:
         assert mock.call_args.kwargs["revision"] == config.support_revision
+    for mock in (transformer, vae, text_encoder, support_encoder):
+        assert mock.call_args.kwargs["use_safetensors"] is True
+    for mock in (tokenizer, text_encoder, support_processor, support_encoder):
+        assert mock.call_args.kwargs["trust_remote_code"] is False
+    for mock in (*sana_loaders, *support_loaders):
+        assert mock.call_args.kwargs.get("trust_remote_code") is not True
+    source = Path("src/ratemem/sana/components.py").read_text(encoding="utf-8")
+    assert "custom_pipeline" not in source
+    assert "DiffusionPipeline" not in source
 ```
 
 - [ ] **Step 7: Implement the frozen component bundle**
@@ -957,20 +995,27 @@ def load_pinned_components(
         config.model_id, subfolder="scheduler", **common
     )
     transformer = SanaTransformer2DModel.from_pretrained(
-        config.model_id, subfolder="transformer", torch_dtype=torch.bfloat16, **common
+        config.model_id, subfolder="transformer", dtype=torch.bfloat16,
+        use_safetensors=True, **common
     )
     vae = AutoencoderDC.from_pretrained(
-        config.model_id, subfolder="vae", torch_dtype=torch.float32, **common
+        config.model_id, subfolder="vae", dtype=torch.float32,
+        use_safetensors=True, **common
     )
-    tokenizer = AutoTokenizer.from_pretrained(config.model_id, subfolder="tokenizer", **common)
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.model_id, subfolder="tokenizer", trust_remote_code=False, **common
+    )
     text_encoder = Gemma2Model.from_pretrained(
-        config.model_id, subfolder="text_encoder", torch_dtype=torch.bfloat16, **common
+        config.model_id, subfolder="text_encoder", dtype=torch.bfloat16,
+        use_safetensors=True, trust_remote_code=False, **common
     )
     support_processor = AutoImageProcessor.from_pretrained(
-        config.support_model_id, revision=config.support_revision, cache_dir=cache_dir
+        config.support_model_id, revision=config.support_revision, cache_dir=cache_dir,
+        trust_remote_code=False
     )
     support_encoder = Dinov2Model.from_pretrained(
-        config.support_model_id, revision=config.support_revision, cache_dir=cache_dir
+        config.support_model_id, revision=config.support_revision, cache_dir=cache_dir,
+        use_safetensors=True, trust_remote_code=False
     )
     _freeze(transformer).to(device=device, dtype=torch.bfloat16)
     _freeze(vae).to(device=device, dtype=torch.float32)
@@ -2082,7 +2127,7 @@ def valid_attempt() -> dict[str, object]:
         "started_at": "2026-08-24T00:00:00Z",
         "ended_at": "2026-08-24T01:00:00Z",
         "source": {"git_commit": "1" * 40, "git_diff_sha256": "2" * 64, "config_sha256": "3" * 64},
-        "software": {"python": "3.11.13", "torch": "2.8.0", "diffusers": "0.35.1", "peft": "0.17.1", "transformers": "4.56.1", "modal": "1.5.4", "container_image_id": "im-test"},
+        "software": {"python": "3.11.13", "torch": "2.13.0", "diffusers": "0.40.0", "peft": "0.20.0", "transformers": "5.16.1", "modal": "1.5.4", "container_image_id": "im-test"},
         "model": {"model_id": "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers", "revision": "b77948f2b4eed5c728e9b828ccff07f7427b43cc", "support_model_id": "facebook/dinov2-small", "support_revision": "ed25f3a31f01632728cabb09d1542f84ab7b0056"},
         "dataset": {"dataset_id": "Yuanshi/Subjects200K", "revision": "0d1cf6536239888f1a8e218790649344810067bc", "manifest_sha256": "4" * 64, "row_indices": list(range(8)), "held_in": True},
         "runtime": {"seed": 20260824, "requested_gpu": "L40S", "observed_gpu": "NVIDIA L40S", "gpu_count": 1, "cpu_cores": 4, "memory_gib": 32, "timeout_seconds": 7200, "peak_allocated_bytes": 100, "peak_reserved_bytes": 200},
@@ -2174,8 +2219,8 @@ Expected: collection fails because `ratemem.pilot.artifacts` does not exist.
       "type": "object", "additionalProperties": false,
       "required": ["python", "torch", "diffusers", "peft", "transformers", "modal", "container_image_id"],
       "properties": {
-        "python": {"type": "string"}, "torch": {"const": "2.8.0"}, "diffusers": {"const": "0.35.1"},
-        "peft": {"const": "0.17.1"}, "transformers": {"const": "4.56.1"}, "modal": {"const": "1.5.4"},
+        "python": {"type": "string"}, "torch": {"const": "2.13.0"}, "diffusers": {"const": "0.40.0"},
+        "peft": {"const": "0.20.0"}, "transformers": {"const": "5.16.1"}, "modal": {"const": "1.5.4"},
         "container_image_id": {"type": "string", "minLength": 1}
       }
     },
@@ -3615,6 +3660,8 @@ git commit -m "feat: define single l40s pilot job"
 ### Task 13: Add the guarded CLI, one-shot launch script, reconciliation, and runbook
 
 **Files:**
+- Modify: `pyproject.toml`
+- Modify: `uv.lock`
 - Create: `src/ratemem/pilot/one_shot.py`
 - Create: `src/ratemem/pilot/cli.py`
 - Create: `scripts/run_modal_pilot.sh`
@@ -4596,7 +4643,20 @@ def security_scan(paths: list[Path]) -> None:
 
 No CLI command accepts a token value, changes the global Modal profile, deploys an app, selects a GPU, changes the USD constants, or launches a remote call.
 
-- [ ] **Step 5: Add the only supported one-shot paid-launch script**
+- [ ] **Step 5: Register the pilot CLI only after its target module exists**
+
+After `src/ratemem/pilot/cli.py` and its unit tests are implemented, add the entry alongside the existing core script:
+
+```toml
+[project.scripts]
+ratemem-pilot = "ratemem.pilot.cli:main"
+```
+
+Run: `uv lock && uv run ratemem-pilot --help`
+
+Expected: exit 0 and Typer help headed by the guarded pilot commands. This smoke is intentionally in Task 13, not Task 1, so a default Task 1 environment never installs a broken console script whose target module has not been created.
+
+- [ ] **Step 6: Add the only supported one-shot paid-launch script**
 
 ```bash
 #!/usr/bin/env bash
@@ -4619,7 +4679,7 @@ Run: `chmod 0755 scripts/run_modal_pilot.sh`
 
 Expected: no output. The script has one `modal run`, waits synchronously, and has no retry loop. If any step fails, `set -euo pipefail` stops immediately and never submits another function invocation.
 
-- [ ] **Step 6: Write the exact dashboard/authentication/run/reconcile runbook**
+- [ ] **Step 7: Write the exact dashboard/authentication/run/reconcile runbook**
 
 Create `docs/runbooks/ratemem-sana-modal-pilot.md` with these ordered gates and expected output:
 
@@ -4637,7 +4697,7 @@ Create `docs/runbooks/ratemem-sana-modal-pilot.md` with these ordered gates and 
 
 The runbook must also state that reported billing can lag, storage may be billed for up to four days after deletion, W&B remains disabled, no Hugging Face token is needed, and no unredacted environment/configuration dump is permitted. It must identify the USD 27 ledger as a pre-launch admission bound rather than a realized-spend hard cap, identify the verified USD 28 Workspace usage budget as the hard outer stop, and require inspection of `execution_receipt_count` plus reconciliation of actual pre-credit metered usage after possible infrastructure rescheduling.
 
-- [ ] **Step 7: Run CLI and launch-script contracts**
+- [ ] **Step 8: Run CLI and launch-script contracts**
 
 Run: `uv run pytest tests/unit/test_pilot_cli.py tests/unit/test_one_shot.py tests/contract/test_launch_script.py -q`
 
@@ -4646,10 +4706,10 @@ mismatch is rejected before receipt creation, serial and concurrent second slot 
 consumers fail atomically, private parent/file modes are exact, and the shell script has one guarded
 `modal run` with no permit-path override.
 
-- [ ] **Step 8: Commit the guarded operating surface**
+- [ ] **Step 9: Commit the guarded operating surface**
 
 ```bash
-git add src/ratemem/pilot/one_shot.py src/ratemem/pilot/cli.py scripts/run_modal_pilot.sh docs/runbooks/ratemem-sana-modal-pilot.md tests/unit/test_pilot_cli.py tests/unit/test_one_shot.py tests/contract/test_launch_script.py
+git add pyproject.toml uv.lock src/ratemem/pilot/one_shot.py src/ratemem/pilot/cli.py scripts/run_modal_pilot.sh docs/runbooks/ratemem-sana-modal-pilot.md tests/unit/test_pilot_cli.py tests/unit/test_one_shot.py tests/contract/test_launch_script.py
 git commit -m "feat: add guarded modal pilot workflow"
 ```
 
@@ -4682,7 +4742,18 @@ git status --short
 
 Expected: all named tests pass; security scan output starts with `PASS security_scan_files=`; `git status --short` contains only the intended implementation files and no `artifacts/pilot`, cache, dataset, model, Modal config, or credential file.
 
-- [ ] **Step 4: Run the CUDA contracts only inside the already-budgeted first pilot**
+- [ ] **Step 4: Audit the complete lock against both PyPI advisories and OSV**
+
+Run:
+
+```bash
+uvx --from pip-audit==2.10.1 pip-audit --strict --no-deps -r <(uv export --frozen --all-groups --all-extras --no-emit-project --format requirements.txt --no-hashes)
+uvx --from pip-audit==2.10.1 pip-audit --strict --no-deps --vulnerability-service osv -r <(uv export --frozen --all-groups --all-extras --no-emit-project --format requirements.txt --no-hashes)
+```
+
+Expected: both commands exit 0 with `No known vulnerabilities found`. The frozen export includes every dependency group and optional extra; `--no-deps` tells pip-audit to audit that already-complete exact graph without attempting a second resolution. Do not add an ignore for a direct or transitive advisory merely to make this gate pass; update the exact compatible pin and regenerate `uv.lock`, or document a true upstream no-fix blocker before proceeding. The second command is the independent OSV-backed view of the same complete uv lock.
+
+- [ ] **Step 5: Run the CUDA contracts only inside the already-budgeted first pilot**
 
 The first-pilot remote runner invokes:
 
@@ -4690,11 +4761,11 @@ Run: `RATEMEM_RUN_REAL_SANA=1 uv run pytest tests/contract/test_dynamic_atom_lin
 
 Expected: both tests pass and each observed execution uses one L40S. Their runtime, peak memory, and exit status are included in the same first-pilot attempt artifact; this is not a separate client submission.
 
-- [ ] **Step 5: Stop at the payment gate**
+- [ ] **Step 6: Stop at the payment gate**
 
 Do not run `scripts/run_modal_pilot.sh` during implementation or code review. Hand the completed free-test output and `docs/runbooks/ratemem-sana-modal-pilot.md` to the author. The paid invocation begins only after the dashboard cap evidence and exact-workspace attestation in Task 13; inability to verify either is a hard stop.
 
-- [ ] **Step 6: Commit any verification-only corrections, then confirm a clean tree**
+- [ ] **Step 7: Commit any verification-only corrections, then confirm a clean tree**
 
 ```bash
 git add .gitignore pyproject.toml uv.lock configs/pilot schemas src/ratemem scripts docs/runbooks tests
