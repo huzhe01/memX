@@ -1063,7 +1063,7 @@ git commit -m "data: freeze unopened final lifecycle trace"
 - Test: `tests/unit/evaluation/test_evaluation_lock.py`
 - Test: `tests/contract/evaluation/test_evaluation_lock_schema.py`
 
-- [ ] **Step 1: Add the prespecified claim and metric policy**
+- [x] **Step 1: Add the prespecified claim and metric policy**
 
 ```yaml
 # configs/scientific/evaluation-policy.yaml
@@ -1165,7 +1165,7 @@ ablations:
     distortion: [code_mse, one_step_diffusion]
 ```
 
-- [ ] **Step 2: Write failing freeze tests**
+- [x] **Step 2: Write failing freeze tests**
 
 ```python
 def test_budget_bytes_are_derived_from_locked_independent_cache_ledger() -> None:
@@ -1236,13 +1236,13 @@ def test_allocator_guarantee_lock_rejects_missing_controller_boundary(
         freeze_evaluation_lock(valid_draft)
 ```
 
-- [ ] **Step 3: Run the evaluation-lock tests and verify failure**
+- [x] **Step 3: Run the evaluation-lock tests and verify failure**
 
 Run: `uv run pytest tests/unit/evaluation/test_evaluation_lock.py -q`
 
 Expected: collection fails because `ratemem.evaluation.evaluation_lock` does not exist.
 
-- [ ] **Step 4: Implement strict lock models and budget derivation**
+- [x] **Step 4: Implement strict lock models and budget derivation**
 
 ```python
 from ratemem.evaluation.types import Sha256
@@ -1345,7 +1345,7 @@ validation search outcome at this stage and instead binds the required post-lock
 
 Add `require_scientific_training_lock(dataset_lock: Path, evaluation_lock: Path, requested_split: str) -> None` and call it from the scientific training entry point. It accepts only `train`, verifies both lock schemas/hashes, and rejects a launch if the evaluation lock is absent, unsigned, or newer inputs have invalidated it.
 
-- [ ] **Step 5: Implement calibration-to-lock compilation and verify it blocks before the baseline lock**
+- [x] **Step 5: Implement calibration-to-lock compilation and verify it blocks before the baseline lock**
 
 Expose `ratemem-eval lock evaluation` with explicit inputs for evaluator inventory, independent-cache byte ledger, margin calibration, CI-width/power record, dataset lock, baseline lock, its audit receipt, and all three trace commitments. The command computes exact byte budgets, copies rather than recomputes margins, and requires two approval records created before comparative validation.
 
@@ -1366,13 +1366,13 @@ uv run ratemem-eval lock evaluation \
 
 Expected at this task boundary: exit 2 with `BLOCKED evaluation-lock: baseline lock is missing` and no output. Task 8 runs the same command after baseline audit and approvals; then stdout must match `^PASS evaluation-lock: [0-9a-f]{64}$`.
 
-- [ ] **Step 6: Generate the schema and test semantic immutability**
+- [x] **Step 6: Generate the schema and test semantic immutability**
 
 Run: `uv run ratemem-eval lock schema --kind evaluation --output schemas/evaluation-lock.schema.json && uv run pytest tests/unit/evaluation/test_evaluation_lock.py tests/contract/evaluation/test_evaluation_lock_schema.py -q`
 
 Expected: all tests pass. Add a test that changing a margin, evaluator preprocessing, trace hash, budget byte, request exponent, or generation seed changes `lock_id`.
 
-- [ ] **Step 7: Commit the evaluation-lock policy and code**
+- [x] **Step 7: Commit the evaluation-lock policy and code**
 
 ```bash
 git add configs/scientific/evaluation-policy.yaml src/ratemem/evaluation/evaluation_lock.py schemas/evaluation-lock.schema.json tests/unit/evaluation/test_evaluation_lock.py tests/contract/evaluation/test_evaluation_lock_schema.py

@@ -1,0 +1,96 @@
+schema_version: "1.0"
+alpha: 0.05
+confidence_level: 0.95
+minimum_training_seeds: 3
+bootstrap_resamples: 10000
+bootstrap_seed: 271828
+multiplicity_method: holm
+ci_width_target:
+  metric_id: request_weighted_identity
+  maximum_half_width: 0.02
+power_target:
+  power: 0.80
+  two_sided_alpha: 0.05
+  minimum_detectable_effect: 0.03
+primary_grid:
+  budget_fractions: [0.25, 0.50, 0.75]
+  required_pass_fraction: 0.50
+  request_regimes: [uniform, zipf]
+metric_formulas:
+  identity: identity_mean_v1
+  prompt: prompt_mean_v1
+  request_weighted_identity: request_weighted_identity_v1
+  request_weighted_utility: equal_weight_identity_prompt_v1
+  retention_auc: normalized_event_trapezoid_v1
+  active_state_drift: acquisition_delta_v1
+  maximum_active_degradation: maximum_acquisition_drop_v1
+  oracle_regret: future_oracle_utility_gap_v1
+  lookup_aurc: lookup_risk_coverage_v1
+  diversity: thresholded_conditional_diversity_v1
+claims:
+  shared_packet_representation:
+    primary_endpoint: request_weighted_identity
+    inference_unit: deployment_episode
+    required_controls: [private_progressive_size_aware, private_progressive_separable_rate, cts_style_static, vb_lora_style_static, share_style_online, dreamcache_feature_cache]
+    constraint_metric: prompt
+    pass_rule: positive_paired_ci_and_prompt_noninferiority
+  causal_packet_allocator:
+    primary_endpoint: request_weighted_utility
+    inference_unit: deployment_episode
+    required_controls: [independent_lrua, private_progressive_size_aware, private_progressive_separable_rate, shared_packet_plain_greedy]
+    constraint_metric: average_active_quality
+    pass_rule: positive_paired_ci_lower_regret_and_quality_noninferiority
+  allocator_guarantee:
+    primary_endpoint: certified_reduced_set_approximation_ratio
+    inference_unit: allocator_instance
+    required_controls: [exact_reduced_set_optimum]
+    ground_set_scope: causal_singleton_density_prescreen_C_t_max24
+    allocator_boundary:
+      fixture_id: four_concepts_eight_packets_each_v1
+      proposal_count: 32
+      prescreen_input_count: 32
+      allocator_input_count: 24
+      deterministic_tie_break: lexicographically_larger_packet_id_wins
+    pass_rule: proof_and_exhaustive_reduced_set_instance_certificate
+  optimization_free_tradeoff:
+    primary_endpoint: identity
+    inference_unit: concept
+    required_controls: [per_concept_lora, dreamcache_feature_cache]
+    pass_rule: quality_noninferiority_and_insertion_latency_advantage
+  autonomous_lookup:
+    primary_endpoint: lookup_aurc
+    inference_unit: concept_conditioned_lookup_episode
+    required_controls: [nearest_key_threshold, learned_novelty]
+    pass_rule: lower_aurc
+prelock_baseline_evidence:
+  require_source_and_license_inventory: true
+  require_real_checkpoint_fidelity: true
+  require_state_ledger_roundtrip: true
+  require_provider_neutral_shared_input_schema: true
+  require_synthetic_provider_contract: true
+  require_frozen_search_policy: true
+  forbid_learned_shared_input_bundle: true
+  forbid_search_outcomes: true
+postlock_execution_freeze:
+  required_before: [strongest_control_selection, final_trace_open]
+  required_receipts: [ratemem_shared_input_bundle, method_train_receipts, method_search_ledgers, search_budget_compliance]
+  require_scientific_compute_reconciliation_for_paid_receipts: true
+ablations:
+  design: one_factor_at_a_time_from_frozen_primary
+  representation_fixed_allocator: guarantee_bearing_allocator
+  allocator_fixed_candidate_stream: true
+  factors:
+    packet_group_size: [8, 16, 32]
+    base_code_bits_per_coefficient: [2, 4, 8]
+    packet_precision_bits: [2, 4, 8]
+    sharing_rule: [exact_payload_only]
+    maximum_incidences_per_concept: [1, 2, 4, 8]
+    packet_ownership: [private_progressive, shared]
+    sharing_enabled: [false, true]
+    allocator: [density_greedy, guarantee_bearing]
+    hysteresis: [disabled, locked_switch_cost]
+    budget_label: [25pct, 50pct, 75pct]
+    support_shots: [1, 3, 5]
+    request_pattern: [uniform, zipf, locked_drift]
+    update_delete_rate_multiplier: [0.5, 1.0, 2.0]
+    distortion: [code_mse, one_step_diffusion]

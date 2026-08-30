@@ -26,6 +26,7 @@ from ratemem.evaluation.dataset_lock import (
     seal_dataset_lock,
     write_dataset_lock_and_card,
 )
+from ratemem.evaluation.evaluation_lock import EvaluationLock
 from ratemem.evaluation.final_trace import (
     FinalEvaluationPermit,
     FinalTraceEnvelope,
@@ -63,9 +64,11 @@ app = typer.Typer(
 data_app = typer.Typer(no_args_is_help=True, help="Audit and seal dataset inventories.")
 stats_app = typer.Typer(no_args_is_help=True, help="Freeze calibration and sample-size records.")
 traces_app = typer.Typer(no_args_is_help=True, help="Build and verify lifecycle traces.")
+lock_app = typer.Typer(no_args_is_help=True, help="Compile immutable scientific locks.")
 app.add_typer(data_app, name="data")
 app.add_typer(stats_app, name="stats")
 app.add_typer(traces_app, name="traces")
+app.add_typer(lock_app, name="lock")
 
 
 @app.callback()
@@ -93,6 +96,11 @@ def _final_trace_blocked(message: str) -> Never:
     raise typer.Exit(code=2)
 
 
+def _evaluation_lock_blocked(message: str) -> Never:
+    typer.echo(f"BLOCKED evaluation-lock: {message}", err=True)
+    raise typer.Exit(code=2)
+
+
 def _write_new_file(path: Path, payload: bytes, mode: int) -> None:
     """Create one immutable artifact without following or replacing an existing path."""
 
@@ -117,6 +125,57 @@ def _write_new_file(path: Path, payload: bytes, mode: int) -> None:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+@lock_app.command("schema")
+def lock_schema(
+    kind: Annotated[Literal["evaluation"], typer.Option("--kind")],
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the exact schema for one scientific lock kind."""
+
+    if kind != "evaluation":
+        _evaluation_lock_blocked("unsupported lock kind")
+    write_json_atomic(output, EvaluationLock.model_json_schema())
+    typer.echo(f"PASS evaluation-lock schema: {output}")
+
+
+@lock_app.command("evaluation")
+def compile_evaluation_lock(
+    policy: Annotated[Path, typer.Option("--policy")],
+    dataset_lock: Annotated[Path, typer.Option("--dataset-lock")],
+    baseline_lock: Annotated[Path, typer.Option("--baseline-lock")],
+    baseline_audit_receipt: Annotated[
+        Path,
+        typer.Option("--baseline-audit-receipt"),
+    ],
+    trace_dir: Annotated[Path, typer.Option("--trace-dir")],
+    evaluator_inventory: Annotated[Path, typer.Option("--evaluator-inventory")],
+    byte_ledger: Annotated[Path, typer.Option("--byte-ledger")],
+    margin_record: Annotated[Path, typer.Option("--margin-record")],
+    power_record: Annotated[Path, typer.Option("--power-record")],
+    approvals: Annotated[Path, typer.Option("--approvals")],
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Compile an evaluation lock after the companion baseline audit exists."""
+
+    # Task 8 owns the baseline schema and audit compiler.  This check intentionally
+    # runs before reading any other input so the pre-lock boundary fails closed.
+    if not baseline_lock.is_file():
+        _evaluation_lock_blocked("baseline lock is missing")
+    _ = (
+        policy,
+        dataset_lock,
+        baseline_audit_receipt,
+        trace_dir,
+        evaluator_inventory,
+        byte_ledger,
+        margin_record,
+        power_record,
+        approvals,
+        output,
+    )
+    _evaluation_lock_blocked("baseline lock compiler is not installed yet")
 
 
 @data_app.command("schema")
