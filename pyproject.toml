@@ -38,6 +38,7 @@ dev = [
 [project.scripts]
 ratemem = "ratemem.cli:main"
 ratemem-pilot = "ratemem.pilot.cli:main"
+memx = "ratemem.experiment.cli:main"
 
 [project.optional-dependencies]
 modal = [

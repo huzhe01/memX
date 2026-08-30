@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
 
@@ -161,4 +162,48 @@ def resolve_runtime(
         device_count=probe.device_count,
         device_names=probe.device_names,
         bf16_supported=probe.bf16_supported,
+    )
+
+
+def observe_runtime_probe(
+    *,
+    additional_backends: Sequence[str] = (),
+) -> RuntimeProbe:
+    """Observe only accelerator and collective facts needed by launch policy."""
+
+    if not isinstance(additional_backends, Sequence) or isinstance(
+        additional_backends, str | bytes
+    ):
+        raise TypeError("additional_backends must be a non-string sequence")
+    requested_backends = ["gloo", "nccl", "mpi", "ucc", "pccl"]
+    for value in additional_backends:
+        checked = _backend(value, "additional backend")
+        if checked not in requested_backends:
+            requested_backends.append(checked)
+    available_backends: list[str] = []
+    for backend in requested_backends:
+        try:
+            available = bool(torch.distributed.is_backend_available(backend))
+        except (AttributeError, RuntimeError, ValueError):
+            available = False
+        if available:
+            available_backends.append(backend)
+    if not available_backends:
+        raise RuntimeError("PyTorch exposes no supported distributed backend")
+
+    accelerator_available = bool(torch.cuda.is_available())
+    device_count = int(torch.cuda.device_count()) if accelerator_available else 0
+    device_names = (
+        tuple(str(torch.cuda.get_device_name(index)) for index in range(device_count))
+        if accelerator_available
+        else ()
+    )
+    bf16_probe = getattr(torch.cuda, "is_bf16_supported", None)
+    bf16_supported = bool(bf16_probe()) if accelerator_available and callable(bf16_probe) else False
+    return RuntimeProbe(
+        accelerator_available=accelerator_available,
+        device_count=device_count,
+        device_names=device_names,
+        bf16_supported=bf16_supported,
+        available_backends=tuple(available_backends),
     )

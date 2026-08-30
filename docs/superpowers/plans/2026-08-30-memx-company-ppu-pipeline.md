@@ -414,7 +414,7 @@ git commit -m "feat: add immutable experiment checkpoints"
 - Create: `tests/integration/experiment/test_smoke_pipeline.py`
 - Create: `tests/contract/experiment/test_cli.py`
 
-- [ ] **Step 1: Write a failing uninterrupted-versus-resume integration test**
+- [x] **Step 1: Write a failing uninterrupted-versus-resume integration test**
 
 ```python
 def test_resumed_fixture_matches_uninterrupted_run(tmp_path: Path) -> None:
@@ -425,13 +425,13 @@ def test_resumed_fixture_matches_uninterrupted_run(tmp_path: Path) -> None:
     assert resumed.metrics_sha256 == full.metrics_sha256
 ```
 
-- [ ] **Step 2: Verify the pipeline API is absent**
+- [x] **Step 2: Verify the pipeline API is absent**
 
 Run: `uv run pytest tests/integration/experiment/test_smoke_pipeline.py -q`
 
 Expected: collection fails for missing experiment runner symbols.
 
-- [ ] **Step 3: Define one experiment protocol and fixture implementation**
+- [x] **Step 3: Define one experiment protocol and fixture implementation**
 
 ```python
 class Experiment(Protocol):
@@ -465,7 +465,7 @@ class FixtureExperiment:
         return StepMetrics(loss=float(loss.detach().cpu()))
 ```
 
-- [ ] **Step 4: Implement rank-zero JSONL artifacts and deterministic resume**
+- [x] **Step 4: Implement rank-zero JSONL artifacts and deterministic resume**
 
 ```python
 def train(config: ExperimentConfig, prepared: PreparedDataset, run_root: Path, runtime: DeviceRuntime, *, resume: str) -> TrainResult:
@@ -484,7 +484,7 @@ def train(config: ExperimentConfig, prepared: PreparedDataset, run_root: Path, r
     return finalize_train_result(experiment, metrics, config, prepared)
 ```
 
-- [ ] **Step 5: Add evaluate/report commands and entry point**
+- [x] **Step 5: Add evaluate/report commands and entry point**
 
 ```toml
 [project.scripts]
@@ -495,13 +495,13 @@ Run: `uv run memx data prepare --config configs/data/smoke.yaml --root /tmp/memx
 
 Expected: canonical JSON with `status="prepared"`.
 
-- [ ] **Step 6: Run the complete offline slice twice**
+- [x] **Step 6: Run the complete offline slice twice**
 
 Run: `uv run pytest tests/integration/experiment tests/contract/experiment -q`
 
 Expected: uninterrupted and resumed output hashes match.
 
-- [ ] **Step 7: Commit the executable experiment slice**
+- [x] **Step 7: Commit the executable experiment slice**
 
 ```bash
 git add pyproject.toml uv.lock src/ratemem/experiment tests/integration/experiment tests/contract/experiment

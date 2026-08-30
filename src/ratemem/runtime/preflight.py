@@ -46,8 +46,13 @@ def build_preflight_receipt(
     *,
     torch_version: str,
     python_version: str,
+    ppu_compatible_backends: tuple[str, ...] = ("pccl",),
 ) -> dict[str, object]:
-    validate_preflight(runtime, ranks)
+    validate_preflight(
+        runtime,
+        ranks,
+        ppu_compatible_backends=ppu_compatible_backends,
+    )
     return {
         "schema_version": "memx-runtime-preflight-v1",
         "status": "passed",
