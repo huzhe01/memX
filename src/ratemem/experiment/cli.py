@@ -9,6 +9,8 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
+import yaml  # type: ignore[import-untyped]
+
 from ratemem.data import load_data_manifest
 from ratemem.data.manifest import DatasetManifest
 from ratemem.data.prepare import PreparedDataset, prepare_dataset
@@ -17,6 +19,12 @@ from ratemem.data.subjects200k import (
     prepare_subjects200k_snapshot,
 )
 from ratemem.experiment.config import ExperimentConfig
+from ratemem.experiment.production import (
+    evaluate_production,
+    prepare_models,
+    train_production,
+)
+from ratemem.experiment.production_config import ProductionExperimentConfig
 from ratemem.experiment.report import render_report
 from ratemem.experiment.runner import evaluate_fixture, train_fixture
 from ratemem.runtime.device import DeviceRuntime, observe_runtime_probe, resolve_runtime
@@ -76,6 +84,21 @@ def _prepared(config: ExperimentConfig, data_root: Path) -> PreparedDataset:
     return prepare_dataset(manifest, data_root)
 
 
+def _experiment_config(path: Path) -> ExperimentConfig | ProductionExperimentConfig:
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise ValueError(f"experiment config is unreadable: {path}") from error
+    if type(payload) is not dict:
+        raise TypeError("experiment config root must be an exact mapping")
+    schema = payload.get("schema_version")
+    if schema == "memx-experiment-v1":
+        return ExperimentConfig.model_validate(payload)
+    if schema == "memx-ratemem-training-v1":
+        return ProductionExperimentConfig.model_validate(payload)
+    raise ValueError(f"unsupported experiment config schema: {schema!r}")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="memx",
@@ -99,11 +122,22 @@ def _parser() -> argparse.ArgumentParser:
     preflight = runtime_commands.add_parser("preflight", help="validate accelerator runtime")
     preflight.add_argument("--device", choices=("auto", "cpu", "nvidia", "ppu"), required=True)
 
+    model = commands.add_parser("model", help="prepare immutable model snapshots")
+    model_commands = model.add_subparsers(dest="model_command", required=True)
+    model_prepare = model_commands.add_parser("prepare", help="download and verify SANA and DINO")
+    model_prepare.add_argument("--config", type=Path, required=True)
+    model_prepare.add_argument("--root", type=Path, required=True)
+
     for name in ("smoke", "train", "evaluate"):
         command = commands.add_parser(name, help=f"run memX {name}")
         command.add_argument("--config", type=Path, required=True)
         command.add_argument("--data-root", type=Path, required=True)
         command.add_argument("--run-root", type=Path, required=True)
+        command.add_argument(
+            "--model-root",
+            type=Path,
+            default=Path(".cache/memx/models"),
+        )
         command.add_argument(
             "--device",
             choices=("auto", "cpu", "nvidia", "ppu"),
@@ -165,6 +199,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 0
+    if arguments.command == "model" and arguments.model_command == "prepare":
+        snapshots = prepare_models(arguments.config, arguments.root)
+        _print_json(
+            {
+                "status": "prepared",
+                "publication_eligible": False,
+                "sana_snapshot": str(snapshots.sana),
+                "dino_snapshot": str(snapshots.dino),
+            }
+        )
+        return 0
     if arguments.command == "report":
         report = render_report(arguments.run_root)
         _print_json(
@@ -177,12 +222,55 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
-    config = ExperimentConfig.load(arguments.config)
-    prepared = _prepared(config, arguments.data_root)
+    config = _experiment_config(arguments.config)
     with _execution_context(arguments.device) as context:
+        if type(config) is ProductionExperimentConfig:
+            if arguments.command not in {"train", "evaluate"}:
+                raise ValueError(
+                    "sana-ratemem supports train and engineering evaluate here; use "
+                    "ratemem-eval for locked scientific evaluation"
+                )
+            if arguments.command == "train":
+                production_result = train_production(
+                    config,
+                    arguments.data_root,
+                    arguments.model_root,
+                    arguments.run_root,
+                    context,
+                    resume=arguments.resume,
+                )
+                result_payload: dict[str, object] = {
+                    "status": production_result.status,
+                    "publication_eligible": False,
+                    "step": production_result.step,
+                    "model_sha256": production_result.model_sha256,
+                    "result": str(production_result.result_path),
+                }
+            else:
+                production_evaluation = evaluate_production(
+                    config,
+                    arguments.data_root,
+                    arguments.model_root,
+                    arguments.run_root,
+                    context,
+                )
+                result_payload = {
+                    "status": production_evaluation.status,
+                    "publication_eligible": False,
+                    "validation_flow_mse": production_evaluation.validation_flow_mse,
+                    "validation_batches": production_evaluation.validation_batches,
+                    "model_sha256": production_evaluation.model_sha256,
+                    "result": str(production_evaluation.result_path),
+                }
+            _print_json(result_payload)
+            return 0
+        if not isinstance(config, ExperimentConfig):
+            raise AssertionError("validated experiment config dispatch failed")
+        fixture_config = config
+        prepared = _prepared(fixture_config, arguments.data_root)
         if arguments.command == "train":
             training_result = train_fixture(
-                config,
+                fixture_config,
                 prepared,
                 arguments.run_root,
                 context,
@@ -199,31 +287,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
         if arguments.command == "evaluate":
-            evaluation_result = evaluate_fixture(
-                config,
+            fixture_evaluation = evaluate_fixture(
+                fixture_config,
                 prepared,
                 arguments.run_root,
                 context,
             )
             _print_json(
                 {
-                    "status": evaluation_result.status,
+                    "status": fixture_evaluation.status,
                     "publication_eligible": False,
-                    "result": str(evaluation_result.result_path),
-                    "model_sha256": evaluation_result.model_sha256,
+                    "result": str(fixture_evaluation.result_path),
+                    "model_sha256": fixture_evaluation.model_sha256,
                 }
             )
             return 0
         if arguments.command == "smoke":
             training = train_fixture(
-                config,
+                fixture_config,
                 prepared,
                 arguments.run_root,
                 context,
                 resume="never",
             )
             evaluate_fixture(
-                config,
+                fixture_config,
                 prepared,
                 arguments.run_root,
                 context,

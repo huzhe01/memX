@@ -15,6 +15,7 @@ MEMX_MASTER_PORT="${MASTER_PORT:-29500}"
 MEMX_DEVICE="${DEVICE:-ppu}"
 MEMX_CONFIG="${CONFIG:-configs/experiments/smoke.yaml}"
 MEMX_DATA_ROOT="${DATA_ROOT:-${MEMX_REPOSITORY_ROOT}/data/memx}"
+MEMX_MODEL_ROOT="${MODEL_ROOT:-${MEMX_REPOSITORY_ROOT}/.cache/memx/models}"
 MEMX_RUN_ROOT="${RUN_ROOT:-${MEMX_REPOSITORY_ROOT}/artifacts/company/smoke}"
 MEMX_RESUME="${RESUME:-never}"
 
@@ -68,6 +69,7 @@ exec "${MEMX_TORCHRUN[@]}" \
   "${MEMX_MODE}" \
   --config "${MEMX_CONFIG}" \
   --data-root "${MEMX_DATA_ROOT}" \
+  --model-root "${MEMX_MODEL_ROOT}" \
   --run-root "${MEMX_RUN_ROOT}" \
   --device "${MEMX_DEVICE}" \
   "${MEMX_EXTRA_ARGS[@]}" \

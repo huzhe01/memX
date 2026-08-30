@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import torch
+from torch import nn
 
 from ratemem.method.codec import RateMemDifferentiableCodec
 from ratemem.method.dictionary import GroupRVQDictionary
@@ -45,7 +48,9 @@ class FakeResolver:
         return features, torch.ones(1, 1, 2), torch.ones(1, 1, 2, dtype=torch.bool)
 
 
-def make_trainer() -> tuple[SequentialMetaTrainer, FakeResolver]:
+def make_trainer(
+    gradient_synchronizer: Callable[[tuple[nn.Parameter, ...]], None] | None = None,
+) -> tuple[SequentialMetaTrainer, FakeResolver]:
     dictionary = GroupRVQDictionary(2, 4, 1, 4)
     codec = RateMemDifferentiableCodec(
         dictionary,
@@ -61,7 +66,17 @@ def make_trainer() -> tuple[SequentialMetaTrainer, FakeResolver]:
         lr=1e-3,
     )
     weights = LossWeights(1.0, 1.0, 0.1, 0.1, 0.1, 0.1, 0.1)
-    return SequentialMetaTrainer(codec, utility, optimizer, resolver, weights), resolver
+    return (
+        SequentialMetaTrainer(
+            codec,
+            utility,
+            optimizer,
+            resolver,
+            weights,
+            gradient_synchronizer=gradient_synchronizer,
+        ),
+        resolver,
+    )
 
 
 def two_query_segment() -> TrainingSegment:
@@ -99,3 +114,22 @@ def test_meta_training_updates_parameters_and_detaches_boundary() -> None:
         for code in receipt.detached_state.codes.values()
     )
     assert not torch.equal(before, trainer.codec.dictionary.codebooks.detach())
+
+
+def test_meta_training_synchronizes_gradients_before_optimizer_step() -> None:
+    calls: list[int] = []
+
+    def synchronize(parameters: tuple[nn.Parameter, ...]) -> None:
+        assert any(parameter.grad is not None for parameter in parameters)
+        calls.append(len(parameters))
+
+    trainer, _resolver = make_trainer(synchronize)
+    trainer.train_segment(
+        two_query_segment(),
+        FunctionalMemoryState(),
+        temperature=0.5,
+        candidate_cost_bytes=torch.ones(2, 1),
+        budget_bytes=2048,
+    )
+
+    assert calls == [len(trainer.parameters)]

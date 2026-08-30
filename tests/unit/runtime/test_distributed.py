@@ -4,9 +4,15 @@ from collections.abc import Mapping
 
 import pytest
 import torch
+from torch import nn
 
 from ratemem.runtime.device import DeviceRuntime
-from ratemem.runtime.distributed import RankEnvironment, distributed_session
+from ratemem.runtime.distributed import (
+    DistributedContext,
+    RankEnvironment,
+    all_reduce_gradients,
+    distributed_session,
+)
 
 
 def distributed_values(**overrides: str) -> Mapping[str, str]:
@@ -105,3 +111,16 @@ def test_rank_manifest_is_canonical() -> None:
         "local_world_size": 4,
         "node_count": 2,
     }
+
+
+def test_single_rank_gradient_reduction_validates_without_mutating() -> None:
+    parameter = nn.Parameter(torch.tensor([2.0]))
+    parameter.grad = torch.tensor([3.0])
+    context = DistributedContext(
+        runtime=cpu_runtime(),
+        ranks=RankEnvironment.from_mapping({}, visible_devices=0),
+    )
+
+    all_reduce_gradients((parameter,), context)
+
+    assert torch.equal(parameter.grad, torch.tensor([3.0]))

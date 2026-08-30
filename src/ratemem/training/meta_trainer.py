@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 
 from ratemem.method.codec import (
     DifferentiableEncoding,
@@ -64,6 +65,7 @@ class SequentialMetaTrainer:
         resolver: PreparedSegmentResolver,
         weights: LossWeights,
         maximum_transformer_passes: int = 2,
+        gradient_synchronizer: Callable[[tuple[nn.Parameter, ...]], None] | None = None,
     ) -> None:
         if type(codec) is not RateMemDifferentiableCodec:
             raise TypeError("codec must be an exact RateMemDifferentiableCodec")
@@ -79,6 +81,18 @@ class SequentialMetaTrainer:
         self.resolver = resolver
         self.weights = weights
         self.maximum_transformer_passes = maximum_transformer_passes
+        if gradient_synchronizer is not None and not callable(gradient_synchronizer):
+            raise TypeError("gradient_synchronizer must be callable or None")
+        parameters: list[nn.Parameter] = []
+        for group in optimizer.param_groups:
+            for parameter in group["params"]:
+                if not isinstance(parameter, nn.Parameter):
+                    raise TypeError("optimizer parameters must be nn.Parameter values")
+                parameters.append(parameter)
+        if not parameters or len({id(parameter) for parameter in parameters}) != len(parameters):
+            raise ValueError("optimizer parameters must be nonempty and unique")
+        self.parameters = tuple(parameters)
+        self.gradient_synchronizer = gradient_synchronizer
 
     def train_segment(
         self,
@@ -203,7 +217,13 @@ class SequentialMetaTrainer:
                 reconstruction_batch.sum() * 0.0,
             )
         total = combine_losses(terms, self.weights)
-        torch.autograd.backward(total)
+        resolver_backward = getattr(self.resolver, "backward", None)
+        if callable(resolver_backward):
+            resolver_backward(total)
+        else:
+            torch.autograd.backward(total)
+        if self.gradient_synchronizer is not None:
+            self.gradient_synchronizer(self.parameters)
         self.optimizer.step()
         self.codec.dictionary.normalize_codebooks_()
         detached = current.detach_boundary()

@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 import torch
+from torch import Tensor, nn
 
 from ratemem.runtime.device import DeviceRuntime
 
@@ -113,6 +114,35 @@ class DistributedContext:
         if self.runtime.kind == "cpu":
             return torch.device("cpu")
         return torch.device("cuda", self.ranks.local_rank)
+
+
+def all_reduce_gradients(
+    parameters: tuple[nn.Parameter, ...],
+    context: DistributedContext,
+) -> None:
+    """Average every present trainable gradient over the active process group."""
+
+    if type(parameters) is not tuple or not parameters:
+        raise TypeError("gradient parameters must be a nonempty exact tuple")
+    if type(context) is not DistributedContext:
+        raise TypeError("distributed context must be an exact DistributedContext")
+    if any(type(parameter) is not nn.Parameter for parameter in parameters):
+        raise TypeError("gradient parameters must contain exact nn.Parameter values")
+    if len({id(parameter) for parameter in parameters}) != len(parameters):
+        raise ValueError("gradient parameters must not contain aliases")
+    for parameter in parameters:
+        gradient = parameter.grad
+        if gradient is None:
+            continue
+        if type(gradient) is not Tensor or gradient.is_sparse:
+            raise TypeError("distributed gradients must be dense exact tensors")
+        if not bool(torch.isfinite(gradient).all().item()):
+            raise RuntimeError("distributed gradient contains a non-finite value")
+        if context.ranks.world_size > 1:
+            if not torch.distributed.is_initialized():
+                raise RuntimeError("multi-rank gradient reduction requires a process group")
+            torch.distributed.all_reduce(gradient, op=torch.distributed.ReduceOp.SUM)
+            gradient.div_(context.ranks.world_size)
 
 
 @contextmanager
