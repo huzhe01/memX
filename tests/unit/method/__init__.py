@@ -1,0 +1,1 @@
+"""RateMem method unit tests."""

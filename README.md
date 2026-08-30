@@ -4,15 +4,17 @@ memX is the reproducible implementation that supersedes the unpublished 2020
 *Memory-MetaGAN* prototype. The new research direction studies byte-bounded, shared progressive
 adapter memory for optimization-free image personalization on a frozen diffusion transformer.
 
-The repository currently contains two deliberately separate execution surfaces:
+The repository contains three deliberately separate execution surfaces:
 
 - a locally verified, end-to-end orchestration fixture covering data preparation, distributed
   runtime policy, optimization, atomic checkpoint/resume, evaluation, and reporting; and
-- the existing SANA-1.5 dynamic-adapter engineering code and guarded single-L40S Modal pilot.
+- a real SANA-1.5/Subjects200K RateMem path with pinned inputs, bounded sequential meta-training,
+  distributed gradient averaging, checkpoint/restart, and held-out engineering evaluation; and
+- the guarded historical single-L40S Modal pilot.
 
-The fixture emits `publication_eligible=false`. It proves that the pipeline runs; it is not a
-CVPR result. Production RateMem/SANA training, matched baselines, and scientific datasets are being
-implemented on top of this interface and remain subject to real PPU validation.
+Both runnable paths emit `publication_eligible=false` until the real PPU gates, three locked seeds,
+matched lifecycle baselines, and frozen scientific evaluation have completed. A successful training
+job is evidence that the implementation ran, not a CVPR result by itself.
 
 ## Clone
 
@@ -82,34 +84,69 @@ Inside the image:
 
 ```bash
 make bootstrap DEVICE=ppu
-make data DEVICE=ppu DATA_ROOT=/data/memx
+make data PROFILE=smoke DATA_ROOT=/data/memx
 make smoke DEVICE=ppu DATA_ROOT=/data/memx RUN_ROOT=/output/memx-smoke
-make train DEVICE=ppu WORLD_SIZE=8 LOCAL_WORLD_SIZE=8 \
-  DATA_ROOT=/data/memx RUN_ROOT=/output/memx-train
-make evaluate DEVICE=ppu WORLD_SIZE=8 LOCAL_WORLD_SIZE=8 \
-  DATA_ROOT=/data/memx RUN_ROOT=/output/memx-train
-make report RUN_ROOT=/output/memx-train
 ```
 
 If the vendor registers PCCL under a compatibility name, set it explicitly, for example
 `RATEMEM_DIST_BACKEND=vendor_pccl`. An explicit PPU request never falls back to CPU.
 
-The exact 1/8/16-card validation sequence is in
+The exact smoke and real 1/8/16-card validation sequence is in
 [`docs/runbooks/company-ppu.md`](docs/runbooks/company-ppu.md). Those hardware gates are not marked
 passed until their commands run on real company PPU-ZW810E devices.
+
+## Real SANA/RateMem training
+
+Prepare the 32 pinned Subjects200K parquet shards (10,553,550,156 bytes) and both pinned model
+snapshots once on shared storage:
+
+```bash
+make data PROFILE=subjects200k DATA_ROOT=/data/memx
+make models MODEL_ROOT=/models/memx
+```
+
+An internal Hugging Face-compatible mirror can be selected without changing any locked identity:
+
+```bash
+export MEMX_HF_ENDPOINT=https://huggingface.company.example
+```
+
+Then launch the locked seed-17 run on eight visible cards:
+
+```bash
+make train PROFILE=sana-ratemem DEVICE=ppu \
+  WORLD_SIZE=8 LOCAL_WORLD_SIZE=8 \
+  DATA_ROOT=/data/memx MODEL_ROOT=/models/memx \
+  RUN_ROOT=/output/memx/seed-17
+
+make evaluate PROFILE=sana-ratemem DEVICE=ppu \
+  WORLD_SIZE=8 LOCAL_WORLD_SIZE=8 \
+  DATA_ROOT=/data/memx MODEL_ROOT=/models/memx \
+  RUN_ROOT=/output/memx/seed-17
+```
+
+`RESUME=auto` restores model, optimizer and CPU RNG state after validating the experiment and
+dataset identities. The other two locked runs use `PROFILE=sana-ratemem-seed29` and
+`PROFILE=sana-ratemem-seed43`, with separate `RUN_ROOT` values. The engineering `evaluate` command
+measures held-out-concept one-timestep flow MSE. Publication metrics and matched baselines run
+through the separately frozen `ratemem-eval` protocol.
 
 ## Data policy
 
 Raw datasets and frozen model weights are not stored in Git. Checked-in manifests bind the dataset
-identity, immutable revision, SPDX license, disjoint train/validation/test concepts, and prepared
-content hashes. Production manifests will support public sources and company mirrors through
-`MEMX_DATA_MIRROR` and `MEMX_MODEL_MIRROR` without changing the locked identities.
+identity, immutable revision, SPDX license, disjoint concept partition, all 32 upstream shard sizes
+and SHA-256 values, and prepared snapshot identity. `MEMX_HF_ENDPOINT` changes only transport;
+downloaded bytes must still match the committed hashes.
 
-The current runnable profile is:
+The runnable profiles are:
 
 ```text
 configs/data/smoke.yaml
 configs/experiments/smoke.yaml
+configs/data/subjects200k.yaml
+configs/experiments/sana-ratemem.yaml
+configs/experiments/sana-ratemem-seed29.yaml
+configs/experiments/sana-ratemem-seed43.yaml
 ```
 
 The earlier `configs/pilot/subjects200k-held-in.json` remains an eight-row engineering-only cache
@@ -119,9 +156,9 @@ contract and must not be used as publication evidence.
 
 ```bash
 uv sync --all-extras --frozen
-uv run ruff check src tests
-uv run mypy src/ratemem
-uv run pytest -q -m 'not paid_modal and not real_sana and not cuda and not ppu'
+uv run --frozen ruff check src tests
+uv run --frozen mypy src/ratemem
+uv run --frozen python -m pytest -q -m 'not paid_modal and not real_sana and not cuda'
 bash -n scripts/*.sh
 git diff --check
 ```
