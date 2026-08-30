@@ -1,0 +1,58 @@
+schema_version: "1.0"
+method_id: ratemem_v1
+novelty_claim: learned_multi_concept_immutable_packet_bundles_with_causal_exact_byte_lifecycle
+borrowed_components:
+  - hyperlora_style_support_amortizer
+  - grouped_residual_vector_quantization
+  - symmetric_integer_quantization
+  - partial_enumeration_submodular_knapsack_allocator
+code:
+  projection_count: 120
+  atom_count: 4
+  dimension: 480
+codec:
+  group_size: 16
+  base_bits: 4
+  rvq_stages: 2
+  entries_per_stage: 64
+  incidence_gain_step: 0.00390625
+  maximum_packets_per_concept: 8
+  sharing_rule: exact_payload_only
+  packet_format_version: RTPKT001
+soft_codec:
+  initial_temperature: 1.0
+  final_temperature: 0.1
+  anneal_steps: 10000
+  maximum_mean_code_error: 0.02
+  maximum_assignment_disagreement: 0.05
+  maximum_topk_disagreement: 0.0
+  ste_forward_atol: 0.000001
+utility:
+  hidden_dimension: 64
+  request_decay: 0.97
+  calibration_bins: 10
+  maximum_expected_calibration_error: 0.05
+controller:
+  outer_policy: request_density_size_aware
+  allow_rejection: true
+  whole_concept_eviction: true
+  switching_penalty: 0.0
+  certified_prescreen_max_bundles: 24
+  theorem_scope: fixed_admitted_cohort_prescreened_packets_only
+training:
+  segment_length: 2
+  maximum_query_events_per_segment: 2
+  maximum_transformer_passes_per_segment: 2
+  truncated_bptt_length: 2
+  detach_at_segment_boundary: true
+  precision: bfloat16
+  activation_checkpointing: true
+  training_seeds: [17, 29, 43]
+  loss_weights:
+    flow: 1.0
+    reconstruction: 0.25
+    rate: 0.01
+    reuse_affinity: 0.05
+    dictionary_balance: 0.01
+    dictionary_commitment: 0.10
+    utility_calibration: 0.10
