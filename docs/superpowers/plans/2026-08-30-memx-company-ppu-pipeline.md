@@ -123,7 +123,7 @@ git commit -m "feat: add provider-neutral accelerator runtime"
 - Create: `tests/unit/runtime/test_distributed.py`
 - Create: `tests/unit/runtime/test_preflight.py`
 
-- [ ] **Step 1: Write failing rank and preflight tests**
+- [x] **Step 1: Write failing rank and preflight tests**
 
 ```python
 def test_rank_environment_requires_consistent_world_size() -> None:
@@ -139,13 +139,13 @@ def test_preflight_rejects_world_size_larger_than_visible_devices() -> None:
         validate_preflight(runtime, world_size=8, local_world_size=8)
 ```
 
-- [ ] **Step 2: Verify expected missing-symbol failures**
+- [x] **Step 2: Verify expected missing-symbol failures**
 
 Run: `uv run pytest tests/unit/runtime/test_distributed.py tests/unit/runtime/test_preflight.py -q`
 
 Expected: collection fails because the new modules do not exist.
 
-- [ ] **Step 3: Implement strict rank parsing and process-group ownership**
+- [x] **Step 3: Implement strict rank parsing and process-group ownership**
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -196,7 +196,7 @@ def distributed_session(runtime: DeviceRuntime, ranks: RankEnvironment) -> Itera
             torch.distributed.destroy_process_group()
 ```
 
-- [ ] **Step 4: Implement preflight receipt generation**
+- [x] **Step 4: Implement preflight receipt generation**
 
 ```python
 def validate_preflight(runtime: DeviceRuntime, *, world_size: int, local_world_size: int) -> None:
@@ -208,7 +208,7 @@ def validate_preflight(runtime: DeviceRuntime, *, world_size: int, local_world_s
         raise RuntimeError("local world size exceeds visible device count")
 ```
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 ```bash
 uv run pytest tests/unit/runtime -q
