@@ -1,0 +1,19 @@
+schema_version: "1.0"
+method_id: per_concept_lora
+target_suffixes: [to_q, to_k, to_v]
+precision: bfloat16
+gradient_checkpointing: true
+optimizer: adamw
+discard_optimizer_after_event: true
+create_initial_state: zero_lora
+update_initial_state: resident_lora
+update_support_rule: new_evidence_only
+search_space:
+  rank: [2, 4, 8, 16]
+  learning_rate: [0.00001, 0.00005, 0.0001]
+  steps: [50, 100]
+  prior_preservation_weight: [0.0]
+search_selector:
+  split: validation
+  endpoint: request_weighted_identity
+  prompt_constraint_source: evaluation_lock
