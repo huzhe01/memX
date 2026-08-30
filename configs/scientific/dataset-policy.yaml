@@ -1,0 +1,30 @@
+schema_version: "1.0"
+required_roles:
+  engineering_pilot: [subjects200k_pilot]
+  meta_training: [subjects200k]
+  primary_one_shot_evaluation: [dreambench_plus_plus]
+  multi_shot_evaluation: [customconcept101_eligible]
+  controlled_post_checkpoint_evaluation: [controlled_post_checkpoint]
+  historical_stress: [omniglot]
+optional_roles:
+  multi_image_training: [syncd]
+anonymous_token_pattern: "^<concept_[0-9]{6}>$"
+forbid_real_identity_names: true
+require_cluster_disjoint_splits: true
+require_immutable_support_query_pools: true
+require_license_attestation: true
+require_pretraining_contamination_disclosure_for:
+  - sana_backbone
+  - support_encoder
+  - identity_evaluator
+  - prompt_evaluator
+role_to_allowed_splits:
+  engineering_pilot: [train]
+  meta_training: [train, validation]
+  multi_image_training: [train, validation]
+  primary_one_shot_evaluation: [final_test]
+  multi_shot_evaluation: [final_test]
+  controlled_post_checkpoint_evaluation: [final_test]
+  historical_stress: [final_test]
+within_training_source_concept_split: {train: 0.90, validation: 0.10}
+scientific_modes: [calibration, validation, final_test]

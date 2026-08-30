@@ -106,6 +106,14 @@ def write_json_atomic(path: Path, value: object) -> None:
     _atomic_write_bytes(path, canonical_json_bytes(value) + b"\n")
 
 
+def write_text_atomic(path: Path, value: str) -> None:
+    """Atomically publish exact UTF-8 text."""
+
+    if type(value) is not str:
+        raise TypeError("value must be an exact str")
+    _atomic_write_bytes(path, value.encode("utf-8"))
+
+
 def write_yaml_atomic(path: Path, value: Mapping[str, object]) -> None:
     """Atomically publish stable, sorted, UTF-8 YAML."""
 
@@ -124,5 +132,6 @@ __all__ = [
     "require_immutable_value",
     "semantic_sha256",
     "write_json_atomic",
+    "write_text_atomic",
     "write_yaml_atomic",
 ]

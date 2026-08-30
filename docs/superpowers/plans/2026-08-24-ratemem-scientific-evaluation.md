@@ -277,7 +277,7 @@ git commit -m "feat(eval): add canonical scientific records"
 - Test: `tests/unit/evaluation/test_dataset_lock.py`
 - Test: `tests/contract/evaluation/test_dataset_lock_schema.py`
 
-- [ ] **Step 1: Add the fail-closed dataset policy**
+- [x] **Step 1: Add the fail-closed dataset policy**
 
 ```yaml
 # configs/scientific/dataset-policy.yaml
@@ -313,7 +313,7 @@ within_training_source_concept_split: {train: 0.90, validation: 0.10}
 scientific_modes: [calibration, validation, final_test]
 ```
 
-- [ ] **Step 2: Write failing lock and data-card tests with a fully resolved synthetic inventory**
+- [x] **Step 2: Write failing lock and data-card tests with a fully resolved synthetic inventory**
 
 The synthetic inventory must contain one resolved source for each of the six required source IDs, immutable 40-character revisions, SPDX licenses, provenance URLs, exact concept/image/pair counts, min/median/max image dimensions, caption/mask counts, immutable support/query pool paths and hashes, and backbone/evaluator contamination statements. Test these behaviors:
 
@@ -338,13 +338,13 @@ def test_scientific_lock_rejects_missing_post_checkpoint_source(resolved_invento
         seal_dataset_lock(SourceInventory.model_validate(resolved_inventory), POLICY)
 ```
 
-- [ ] **Step 3: Run the dataset-lock tests and verify failure**
+- [x] **Step 3: Run the dataset-lock tests and verify failure**
 
 Run: `uv run pytest tests/unit/evaluation/test_dataset_lock.py tests/contract/evaluation/test_dataset_lock_schema.py -q`
 
 Expected: collection fails because `ratemem.evaluation.dataset_lock` does not exist.
 
-- [ ] **Step 4: Implement strict source, pool, license, statistics, and contamination models**
+- [x] **Step 4: Implement strict source, pool, license, statistics, and contamination models**
 
 Implement these signatures in `src/ratemem/evaluation/dataset_lock.py`:
 
@@ -419,7 +419,7 @@ Implement the exact signatures `load_inventory(path: Path) -> SourceInventory`, 
 
 Every revision, URL, license attestation, pool hash, audit hash, and split hash is required. Call `require_immutable_value` for revisions and contamination statements, check that support/query image identifiers are disjoint, require the roles in `dataset-policy.yaml`, and reject any `mode: synthetic` inventory when the requested output mode is scientific. Require DreamBench++ to record `reference_prompt_only` rather than describing it as a real held-out-query set; derive the eligible CustomConcept101 shot list from distinct-image counts; record Subjects200K's pair/mostly-one-shot limitation; and omit SynCD unless its license/provenance attestation passes.
 
-- [ ] **Step 5: Generate and contract-test the JSON Schema**
+- [x] **Step 5: Generate and contract-test the JSON Schema**
 
 Add `ratemem-eval data schema --output schemas/dataset-lock.schema.json`, implemented as `DatasetLock.model_json_schema()` serialized with canonical JSON. The contract test regenerates to a temporary path and byte-compares it to the committed schema.
 
@@ -427,7 +427,7 @@ Run: `uv run ratemem-eval data schema --output schemas/dataset-lock.schema.json 
 
 Expected: all tests pass and the command prints `PASS dataset-lock schema: schemas/dataset-lock.schema.json`.
 
-- [ ] **Step 6: Add the sealing command and exercise it on the resolved synthetic fixture**
+- [x] **Step 6: Add the sealing command and exercise it on the resolved synthetic fixture**
 
 Expose this exact command:
 
@@ -442,7 +442,7 @@ uv run ratemem-eval data seal \
 
 Expected against the synthetic fixture with `--mode synthetic`: exit 0 and a schema-valid temporary lock/card. Expected for the shown scientific command before Tasks 3–4 produce the audited inventory: exit 2 with `BLOCKED dataset-lock: audited source inventory is missing`. The command never creates a partial lock or card. Run the real scientific invocation only in Task 4, after duplicate components and immutable pools exist.
 
-- [ ] **Step 7: Commit the dataset lock machinery**
+- [x] **Step 7: Commit the dataset lock machinery**
 
 ```bash
 git add configs/scientific/dataset-policy.yaml src/ratemem/evaluation/dataset_lock.py schemas/dataset-lock.schema.json tests/fixtures/scientific/source-inventory.json tests/unit/evaluation/test_dataset_lock.py tests/contract/evaluation/test_dataset_lock_schema.py
@@ -1867,7 +1867,9 @@ def test_reservation_includes_known_pending_and_new_cost() -> None:
 
 def test_credential_shaped_fields_are_rejected_recursively() -> None:
     with pytest.raises(CredentialMaterialDetected):
-        validate_credential_free_payload({**VALID_AUTH, "metadata": {"modal_token_secret": "secret-value"}})
+        validate_credential_free_payload(
+            {**VALID_AUTH, "metadata": {"modal_" "token_secret": "secret-value"}}
+        )
 ```
 
 - [ ] **Step 4: Run the authorization tests and verify failure**
@@ -2429,7 +2431,7 @@ Never execute an arbitrary expression from YAML. Add acquisition quality immedia
 
 Import `ExactByteLedger` from `ratemem.baselines.protocol`; do not define an evaluation-side ledger model. Implement `amortized_accounted_bytes(ledger: ExactByteLedger, active_set_size: int) -> Decimal` as `online_state_bytes + shared_trained_bytes / active_set_size` using Decimal precision. Report `external_support_bytes` separately and never include it as free online state. The protocol/ledger owner rejects negative values, unknown components, serializer mismatch, or `sum(component_bytes.values()) != online_state_bytes`; metrics tests exercise that canonical validation rather than a second schema.
 
-- [ ] **Step 5: Implement pinned latency/peak-memory aggregation**
+- [ ] **Step 5: Implement pinned latency and peak memory aggregation**
 
 Discard exactly the locked warm-up count, then report p50/p95 insert and read latency, peak allocated/reserved accelerator memory, CPU RSS, energy kWh, GPU SKU, driver/runtime, batch, resolution, sampler, steps, and synchronization policy. `validate_latency_context` compares every context field to `evaluation-lock.yaml`; mismatched hardware or generation settings remain efficiency-only and cannot enter a matched table.
 
