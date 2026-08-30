@@ -1,0 +1,20 @@
+schema_version: "1.0"
+decoded_pixel_hash: sha256_exif_transposed_rgb_v1
+perceptual_hash: phash_64_v1
+phash_max_hamming: 4
+feature_encoder:
+  name: facebook/dinov2-large
+  immutable_lock_path: artifacts/scientific/dataset-audit/duplicate-feature-encoder-lock.json
+  preprocessing: resize_shorter_518_center_crop_rgb_v1
+feature_cosine_min: 0.985
+crop_verification:
+  detector: opencv_sift_homography_v1
+  minimum_inliers: 12
+  minimum_inlier_ratio: 0.35
+burst_neighbor:
+  maximum_seconds: 2.0
+  feature_cosine_min: 0.97
+ambiguous_pair_review:
+  independent_reviewers: 2
+  disagreement_resolution: third_reviewer_majority
+cluster_assignment: connected_components_v1

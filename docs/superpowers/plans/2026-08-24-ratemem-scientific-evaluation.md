@@ -555,6 +555,11 @@ git commit -m "feat(eval): lock support query and prompt pools"
 
 ### Task 4: Audit exact duplicates, crops, recompressions, burst neighbors, and feature leakage
 
+> Execution note (2026-08-30): Steps 1--5 are verified with deterministic synthetic images and a
+> frozen injected encoder contract. The real catalog audit and scientific dataset seal in Steps
+> 6--7 remain deliberately unclaimed until the audited company catalog and locked DINOv2 weight
+> bytes are available.
+
 **Files:**
 - Create: `configs/scientific/duplicate-policy.yaml`
 - Create: `src/ratemem/evaluation/leakage.py`
@@ -562,7 +567,7 @@ git commit -m "feat(eval): lock support query and prompt pools"
 - Test: `tests/unit/evaluation/test_leakage.py`
 - Test: `tests/integration/evaluation/test_duplicate_audit.py`
 
-- [ ] **Step 1: Pin the pre-split candidate and adjudication policy**
+- [x] **Step 1: Pin the pre-split candidate and adjudication policy**
 
 ```yaml
 # configs/scientific/duplicate-policy.yaml
@@ -601,7 +606,7 @@ uv run ratemem-eval data lock-feature-encoder \
 
 Expected: exit 0 and stdout matches `^PASS duplicate-feature-encoder lock: revision=[0-9a-f]{40,64} weights=[0-9a-f]{64}$`; mutable branches or weights without a local SHA-256 exit 2.
 
-- [ ] **Step 2: Write failing unit tests for evidence linking and whole-component splitting**
+- [x] **Step 2: Write failing unit tests for evidence linking and whole-component splitting**
 
 ```python
 def test_any_strong_duplicate_evidence_links_records(policy: DuplicatePolicy) -> None:
@@ -626,13 +631,13 @@ def test_concepts_connected_by_duplicate_images_share_one_split() -> None:
     assert assignment["c1"] == assignment["c2"]
 ```
 
-- [ ] **Step 3: Run the leakage tests and verify failure**
+- [x] **Step 3: Run the leakage tests and verify failure**
 
 Run: `uv run pytest tests/unit/evaluation/test_leakage.py -q`
 
 Expected: collection fails because `ratemem.evaluation.leakage` does not exist.
 
-- [ ] **Step 4: Implement fingerprints, pair evidence, union-find, and adjudication validation**
+- [x] **Step 4: Implement fingerprints, pair evidence, union-find, and adjudication validation**
 
 Implement these stable interfaces:
 
@@ -662,7 +667,7 @@ Implement the exact signatures `fingerprint_image(path: Path, encoder: FrozenFea
 
 Use exact content and decoded-pixel hashes first, LSH only to propose pHash/feature candidates, SIFT homography to verify crop candidates, and capture-group/time evidence for burst/video neighbors. The final connected components must include accepted two-reviewer adjudications. Record every candidate rule, score, immutable encoder repository/revision/weights hash from `duplicate-feature-encoder-lock.json`, reviewer decision hash, and component membership in the report.
 
-- [ ] **Step 5: Add a tiny end-to-end audit fixture**
+- [x] **Step 5: Add a tiny end-to-end audit fixture**
 
 Create four small test images: one original, one JPEG recompression, one crop, and one visually different image. Assert the first three share a component, the last does not, and a preassigned train/final collision exits before writing split assignments. Do not assert exact DINO floating-point values; assert the declared tolerance and recorded encoder revision.
 

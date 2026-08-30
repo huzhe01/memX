@@ -15,6 +15,11 @@ from ratemem.evaluation.dataset_lock import (
     seal_dataset_lock,
     write_dataset_lock_and_card,
 )
+from ratemem.evaluation.leakage import (
+    DuplicateAuditReport,
+    load_feature_encoder_inventory,
+    lock_feature_encoder,
+)
 from ratemem.evaluation.pools import (
     PoolLeakageError,
     PoolManifestLine,
@@ -41,6 +46,11 @@ def _blocked(message: str) -> Never:
 
 def _pools_blocked(message: str) -> Never:
     typer.echo(f"BLOCKED pools: {message}", err=True)
+    raise typer.Exit(code=2)
+
+
+def _duplicate_blocked(message: str) -> Never:
+    typer.echo(f"BLOCKED duplicate-audit: {message}", err=True)
     raise typer.Exit(code=2)
 
 
@@ -116,6 +126,44 @@ def build_pools(
     typer.echo(
         "PASS pools: train/validation/final_test concept pools and prompt namespaces "
         "are disjoint"
+    )
+
+
+@data_app.command("duplicate-schema")
+def duplicate_schema(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the strict duplicate-audit report schema."""
+
+    write_json_atomic(output, DuplicateAuditReport.model_json_schema())
+    typer.echo(f"PASS scientific-duplicate-report schema: {output}")
+
+
+@data_app.command("lock-feature-encoder")
+def feature_encoder_lock(
+    model_id: Annotated[str, typer.Option("--model-id")],
+    model_inventory: Annotated[Path, typer.Option("--model-inventory")],
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Bind one immutable encoder revision to locally observed weight bytes."""
+
+    if output.exists() or output.is_symlink():
+        _duplicate_blocked("feature encoder lock output already exists")
+    try:
+        inventory = load_feature_encoder_inventory(model_inventory)
+        lock = lock_feature_encoder(
+            model_id=model_id,
+            inventory_entries=inventory.models,
+            preprocessing="resize_shorter_518_center_crop_rgb_v1",
+        )
+        write_json_atomic(output, lock.model_dump(mode="json"))
+    except (OSError, TypeError, ValueError) as error:
+        if output.exists():
+            output.unlink()
+        _duplicate_blocked(str(error))
+    typer.echo(
+        f"PASS duplicate-feature-encoder lock: revision={lock.immutable_revision} "
+        f"weights={lock.weights_sha256}"
     )
 
 
