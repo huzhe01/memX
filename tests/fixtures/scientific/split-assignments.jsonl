@@ -1,0 +1,6 @@
+{"image_id":"alpha-ada-001","split":"train"}
+{"image_id":"alpha-ada-002","split":"train"}
+{"image_id":"beta-grace-001","split":"validation"}
+{"image_id":"beta-grace-002","split":"validation"}
+{"image_id":"gamma-katherine-001","split":"final_test"}
+{"image_id":"gamma-katherine-002","split":"final_test"}

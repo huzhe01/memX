@@ -15,6 +15,11 @@ from ratemem.evaluation.dataset_lock import (
     seal_dataset_lock,
     write_dataset_lock_and_card,
 )
+from ratemem.evaluation.pools import (
+    PoolLeakageError,
+    PoolManifestLine,
+    build_pools_from_catalogs,
+)
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -31,6 +36,11 @@ def root() -> None:
 
 def _blocked(message: str) -> Never:
     typer.echo(f"BLOCKED dataset-lock: {message}", err=True)
+    raise typer.Exit(code=2)
+
+
+def _pools_blocked(message: str) -> Never:
+    typer.echo(f"BLOCKED pools: {message}", err=True)
     raise typer.Exit(code=2)
 
 
@@ -71,6 +81,42 @@ def dataset_seal(
             card_output.unlink()
         _blocked(str(error))
     typer.echo(f"PASS dataset-lock sealed: {lock.lock_id}")
+
+
+@data_app.command("pool-schema")
+def pool_schema(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the schema shared by every public pool JSONL line."""
+
+    write_json_atomic(output, PoolManifestLine.model_json_schema())
+    typer.echo(f"PASS pool-manifest schema: {output}")
+
+
+@data_app.command("build-pools")
+def build_pools(
+    source_catalog: Annotated[Path, typer.Option("--source-catalog")],
+    prompt_catalog: Annotated[Path, typer.Option("--prompt-catalog")],
+    split_assignments: Annotated[Path, typer.Option("--split-assignments")],
+    split_seed: Annotated[int, typer.Option("--split-seed")],
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Build anonymous, concept-disjoint pools from explicit split assignments."""
+
+    try:
+        build_pools_from_catalogs(
+            source_catalog=source_catalog,
+            prompt_catalog=prompt_catalog,
+            split_assignments=split_assignments,
+            split_seed=split_seed,
+            output_dir=output,
+        )
+    except (FileExistsError, OSError, PoolLeakageError, TypeError, ValueError) as error:
+        _pools_blocked(str(error))
+    typer.echo(
+        "PASS pools: train/validation/final_test concept pools and prompt namespaces "
+        "are disjoint"
+    )
 
 
 def main() -> None:

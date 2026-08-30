@@ -1,0 +1,3 @@
+{"split":"train","template_id":"Ada-studio","template_sha256":"affe508b0431afc1fea9d7e7d4ba0264bec8535abcecb8df2b4f2dbb66563a06","template_text":"a studio photo of {concept}"}
+{"split":"validation","template_id":"validation-watercolor","template_sha256":"ef0fc77113a4be30fa00c5d7d0c9cf23a98d740b0c385120ad9f31458397a61e","template_text":"a watercolor of {concept}"}
+{"split":"final_test","template_id":"final-cinematic","template_sha256":"243c18a72fa18f3adb72f647638e03df89c17f4c93a86ca43fe5f6595baeb97c","template_text":"a cinematic photo of {concept}"}

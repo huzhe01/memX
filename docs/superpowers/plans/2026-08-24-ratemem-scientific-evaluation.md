@@ -458,7 +458,7 @@ git commit -m "feat(eval): seal scientific dataset inventories"
 - Test: `tests/unit/evaluation/test_pools.py`
 - Test: `tests/contract/evaluation/test_pool_schema.py`
 
-- [ ] **Step 1: Write the failing pool-manifest tests**
+- [x] **Step 1: Write the failing pool-manifest tests**
 
 ```python
 def test_pool_builder_anonymizes_names_and_keeps_support_query_disjoint(tmp_path: Path) -> None:
@@ -477,13 +477,13 @@ def test_derivative_of_query_cannot_enter_training_pool(image_records: list[Imag
         build_locked_pools(image_records, split_seed=87321)
 ```
 
-- [ ] **Step 2: Run the pool tests and verify failure**
+- [x] **Step 2: Run the pool tests and verify failure**
 
 Run: `uv run pytest tests/unit/evaluation/test_pools.py -q`
 
 Expected: collection fails because `ratemem.evaluation.pools` does not exist.
 
-- [ ] **Step 3: Implement the exact per-image record and deterministic pool writer**
+- [x] **Step 3: Implement the exact per-image record and deterministic pool writer**
 
 ```python
 from ratemem.evaluation.types import ConceptToken, Sha256
@@ -525,7 +525,7 @@ def build_locked_pools(
 
 Sort by `(split, source_id, concept_id, image_id)`, derive anonymous tokens with `HMAC-SHA256(split_seed, concept_id)[:6]`, preserve the private concept-to-token map only in the restricted audit artifact, traverse every `derivative_of` chain, and write one canonical JSONL manifest per `(source, split, support/query)` pool. Prompt templates are split before rendering, and their hashes—not identity-bearing text—enter the public trace manifest.
 
-- [ ] **Step 4: Add schema generation and verify deterministic bytes**
+- [x] **Step 4: Add schema generation and verify deterministic bytes**
 
 Run the builder twice into two temporary directories in the contract test and assert identical filenames, record order, SHA-256 values, and pool summary. Generate `schemas/scientific-pool-manifest.schema.json` from `ImageRecord` plus a manifest header.
 
@@ -533,7 +533,7 @@ Run: `uv run pytest tests/unit/evaluation/test_pools.py tests/contract/evaluatio
 
 Expected: all tests pass, including byte-identical pool output across both builds.
 
-- [ ] **Step 5: Add the pool command and exercise it on synthetic split assignments**
+- [x] **Step 5: Add the pool command and exercise it on synthetic split assignments**
 
 ```bash
 uv run ratemem-eval data build-pools \
@@ -546,7 +546,7 @@ uv run ratemem-eval data build-pools \
 
 Expected on the synthetic fixture: `PASS pools: train/validation/final_test concept pools and prompt namespaces are disjoint`; any derivative/caption/mask/prompt crossing exits 2 and writes no pool manifests. Defer the shown real-data invocation until Task 4 writes audited split assignments.
 
-- [ ] **Step 6: Commit the immutable pool builder**
+- [x] **Step 6: Commit the immutable pool builder**
 
 ```bash
 git add src/ratemem/evaluation/pools.py schemas/scientific-pool-manifest.schema.json tests/fixtures/scientific/images.jsonl tests/unit/evaluation/test_pools.py tests/contract/evaluation/test_pool_schema.py
