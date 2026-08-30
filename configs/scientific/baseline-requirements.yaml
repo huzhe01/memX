@@ -1,0 +1,74 @@
+schema_version: "1.0"
+catalog: configs/baselines/literature-classification.yaml
+runnable_registry:
+  - independent_fifo
+  - independent_lru
+  - independent_lrua
+  - private_progressive_size_aware
+  - private_progressive_separable_rate
+  - shared_packet_plain_greedy
+  - cts_style_static
+  - vb_lora_style_static
+  - share_style_online
+  - dreamcache_feature_cache
+  - hyperlora_upstream
+  - stateless_amortizer
+  - per_concept_lora
+  - exact_append_only_quantized
+  - exact_future_trace_packets
+postlock_execution_required:
+  - independent_fifo
+  - independent_lru
+  - independent_lrua
+  - private_progressive_size_aware
+  - private_progressive_separable_rate
+  - shared_packet_plain_greedy
+  - cts_style_static
+  - vb_lora_style_static
+  - share_style_online
+  - dreamcache_feature_cache
+  - hyperlora_upstream
+  - stateless_amortizer
+  - per_concept_lora
+  - exact_append_only_quantized
+  - exact_future_trace_packets
+sana_primary_required:
+  - independent_fifo
+  - independent_lru
+  - independent_lrua
+  - private_progressive_size_aware
+  - private_progressive_separable_rate
+  - shared_packet_plain_greedy
+  - cts_style_static
+  - vb_lora_style_static
+  - share_style_online
+  - dreamcache_feature_cache
+  - per_concept_lora
+primary_roles:
+  representation: [independent_fifo, independent_lru, private_progressive_size_aware, private_progressive_separable_rate, cts_style_static, vb_lora_style_static, share_style_online, dreamcache_feature_cache]
+  allocator: [independent_fifo, independent_lru, independent_lrua, private_progressive_size_aware, private_progressive_separable_rate, shared_packet_plain_greedy, share_style_online]
+  optimization_free_tradeoff: [per_concept_lora, dreamcache_feature_cache]
+upper_reference_only: [exact_append_only_quantized, exact_future_trace_packets]
+secondary_only: [hyperlora_upstream, stateless_amortizer]
+contextual_literature_citation_keys: [sinelora_delta_aaai2026]
+backbone_resolution:
+  sole_primary: sana_1_5_1_6b
+  allow_primary_backbone_fallback: false
+  sdxl_native_evidence: contextual_only
+  block_claim_if_required_sana_fidelity_fails: true
+prelock_shared_input:
+  permitted_bundle_kind: synthetic_protocol
+  require_provider_neutral_schema: true
+  require_exact_ledger_roundtrip: true
+  forbid_learned_ratemem_dictionary: true
+  forbid_validation_metrics: true
+  forbid_final_trace: true
+search_policy:
+  maximum_trials_per_method: 24
+  maximum_gpu_hours_per_method: 48.0
+  split: validation
+  prelock_mode: frozen_policy_only
+  require_postlock_receipts_before_selection: true
+literature_disposition:
+  require_every_catalog_entry_classified: true
+  contextual_or_incompatible_never_blocks_primary_lock: true

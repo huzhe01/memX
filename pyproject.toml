@@ -39,6 +39,7 @@ dev = [
 ratemem = "ratemem.cli:main"
 ratemem-pilot = "ratemem.pilot.cli:main"
 ratemem-eval = "ratemem.evaluation.cli:main"
+ratemem-baselines = "ratemem.baselines.cli:main"
 memx = "ratemem.experiment.cli:main"
 
 [project.optional-dependencies]

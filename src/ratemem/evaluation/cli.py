@@ -14,10 +14,29 @@ import yaml  # type: ignore[import-untyped]
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 
+from ratemem.baselines.catalog import load_catalog
+from ratemem.evaluation.baselines import BaselineLock, load_requirements
 from ratemem.evaluation.canonical import (
     canonical_json_bytes,
+    file_sha256,
     semantic_sha256,
     write_json_atomic,
+)
+from ratemem.evaluation.compute import (
+    BaselineFidelityAuthorization,
+    BaselineFidelityBindings,
+    BaselineFidelityCostReservation,
+    BaselineFidelityPhaseCostBound,
+    BaselineFidelityPhaseRequest,
+    ConsumedPermit,
+    ScientificComputeDenied,
+    WorkspaceSelection,
+    WorkspaceSnapshot,
+    attest_scientific_workspace,
+    authorize_baseline_fidelity,
+    load_baseline_fidelity_policy,
+    reconcile_baseline_fidelity_in_ledger,
+    reserve_baseline_fidelity_in_ledger,
 )
 from ratemem.evaluation.dataset_lock import (
     DatasetLock,
@@ -65,10 +84,14 @@ data_app = typer.Typer(no_args_is_help=True, help="Audit and seal dataset invent
 stats_app = typer.Typer(no_args_is_help=True, help="Freeze calibration and sample-size records.")
 traces_app = typer.Typer(no_args_is_help=True, help="Build and verify lifecycle traces.")
 lock_app = typer.Typer(no_args_is_help=True, help="Compile immutable scientific locks.")
+baselines_app = typer.Typer(no_args_is_help=True, help="Verify baseline audit handoffs.")
+compute_app = typer.Typer(no_args_is_help=True, help="Authorize scientific compute phases.")
 app.add_typer(data_app, name="data")
 app.add_typer(stats_app, name="stats")
 app.add_typer(traces_app, name="traces")
 app.add_typer(lock_app, name="lock")
+app.add_typer(baselines_app, name="baselines")
+app.add_typer(compute_app, name="compute")
 
 
 @app.callback()
@@ -101,6 +124,11 @@ def _evaluation_lock_blocked(message: str) -> Never:
     raise typer.Exit(code=2)
 
 
+def _compute_blocked(message: str) -> Never:
+    typer.echo(f"BLOCKED baseline-fidelity: {message}", err=True)
+    raise typer.Exit(code=2)
+
+
 def _write_new_file(path: Path, payload: bytes, mode: int) -> None:
     """Create one immutable artifact without following or replacing an existing path."""
 
@@ -125,6 +153,227 @@ def _write_new_file(path: Path, payload: bytes, mode: int) -> None:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+@baselines_app.command("schema")
+def baseline_lock_schema(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the exact scientific baseline-lock JSON Schema."""
+
+    write_json_atomic(output, BaselineLock.model_json_schema())
+    typer.echo(f"PASS baseline-lock schema: {output}")
+
+
+@compute_app.command("schema-baseline-fidelity")
+def baseline_fidelity_authorization_schema(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the narrow baseline-fidelity authorization JSON Schema."""
+
+    write_json_atomic(output, BaselineFidelityAuthorization.model_json_schema())
+    typer.echo(f"PASS baseline-fidelity authorization schema: {output}")
+
+
+@compute_app.command("attest-workspace")
+def attest_workspace_command(
+    policy: Annotated[Path, typer.Option("--policy")],
+    workspace_selection: Annotated[
+        Path,
+        typer.Option("--workspace-selection"),
+    ],
+    budget_evidence: Annotated[Path, typer.Option("--budget-evidence")],
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Attest one explicitly selected workspace and its operator cap evidence."""
+
+    if output.exists() or output.is_symlink():
+        _compute_blocked("output_exists")
+    try:
+        compute_policy = load_baseline_fidelity_policy(policy)
+        selection = WorkspaceSelection.model_validate_json(
+            workspace_selection.read_text(encoding="utf-8")
+        )
+        snapshot = attest_scientific_workspace(
+            selection,
+            budget_evidence,
+            compute_policy,
+        )
+        _write_new_file(
+            output,
+            canonical_json_bytes(snapshot.model_dump(mode="json")) + b"\n",
+            0o600,
+        )
+    except (OSError, ScientificComputeDenied, TypeError, ValueError) as error:
+        _compute_blocked(str(error))
+    typer.echo(
+        "PASS scientific-workspace attestation: "
+        f"workspace={snapshot.workspace_id} outer_cap={snapshot.outer_budget_usd:.2f} "
+        f"known_usage={snapshot.known_usage_usd:.2f}"
+    )
+
+
+@compute_app.command("authorize-baseline-fidelity")
+def authorize_baseline_fidelity_command(
+    policy: Annotated[Path, typer.Option("--policy")],
+    workspace_selection: Annotated[Path, typer.Option("--workspace-selection")],
+    workspace_snapshot: Annotated[Path, typer.Option("--workspace-snapshot")],
+    phase_request: Annotated[Path, typer.Option("--phase-request")],
+    dataset_lock: Annotated[Path, typer.Option("--dataset-lock")],
+    requirements: Annotated[Path, typer.Option("--requirements")],
+    catalog: Annotated[Path, typer.Option("--catalog")],
+    fidelity_policy: Annotated[Path, typer.Option("--fidelity-policy")],
+    source_inventory: Annotated[Path, typer.Option("--source-inventory")],
+    clean_diff_receipt: Annotated[Path, typer.Option("--clean-diff-receipt")],
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Authorize one pre-lock source-fidelity job without reserving cost."""
+
+    if output.exists() or output.is_symlink():
+        _compute_blocked("output_exists")
+    try:
+        compute_policy = load_baseline_fidelity_policy(policy)
+        selection = WorkspaceSelection.model_validate_json(
+            workspace_selection.read_text(encoding="utf-8")
+        )
+        snapshot = WorkspaceSnapshot.model_validate_json(
+            workspace_snapshot.read_text(encoding="utf-8")
+        )
+        phase = BaselineFidelityPhaseRequest.model_validate_json(
+            phase_request.read_text(encoding="utf-8")
+        )
+        dataset_payload = yaml.safe_load(dataset_lock.read_text(encoding="utf-8"))
+        locked_dataset = DatasetLock.model_validate(dataset_payload)
+        if semantic_sha256(locked_dataset.model_dump(mode="json")) != locked_dataset.lock_id:
+            raise ScientificComputeDenied("dataset_lock_hash_mismatch")
+        locked_requirements = load_requirements(requirements)
+        locked_catalog = load_catalog(catalog)
+        clean_diff_payload = yaml.safe_load(
+            clean_diff_receipt.read_text(encoding="utf-8")
+        )
+        if type(clean_diff_payload) is not dict:
+            raise ScientificComputeDenied("clean_diff_receipt_invalid")
+        bindings = BaselineFidelityBindings(
+            dataset_lock_sha256=locked_dataset.lock_id,
+            baseline_requirements_sha256=locked_requirements.sha256,
+            comparator_catalog_sha256=locked_catalog.sha256,
+            fidelity_policy_sha256=file_sha256(fidelity_policy),
+            source_inventory_sha256=file_sha256(source_inventory),
+            git_commit=str(clean_diff_payload.get("git_commit", "")),
+            clean_diff_sha256=str(
+                clean_diff_payload.get("clean_diff_sha256", "")
+            ),
+        )
+        authorization = authorize_baseline_fidelity(
+            selection,
+            snapshot,
+            phase,
+            bindings,
+            compute_policy,
+        )
+        _write_new_file(
+            output,
+            canonical_json_bytes(authorization.model_dump(mode="json")) + b"\n",
+            0o600,
+        )
+    except (OSError, ScientificComputeDenied, TypeError, ValueError) as error:
+        _compute_blocked(str(error))
+    typer.echo(
+        "PASS baseline-fidelity authorization: "
+        f"phase={authorization.phase_id} workspace={authorization.workspace_id} "
+        f"authorization={authorization.authorization_sha256}"
+    )
+
+
+@compute_app.command("reserve-baseline-fidelity")
+def reserve_baseline_fidelity_command(
+    policy: Annotated[Path, typer.Option("--policy")],
+    authorization: Annotated[Path, typer.Option("--authorization")],
+    phase_bound: Annotated[Path, typer.Option("--phase-bound")],
+    workspace_snapshot: Annotated[Path, typer.Option("--workspace-snapshot")],
+    ledger: Annotated[Path, typer.Option("--ledger")],
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Reserve a fidelity phase against all pending shared-ledger cost."""
+
+    try:
+        permit = BaselineFidelityAuthorization.model_validate_json(
+            authorization.read_text(encoding="utf-8")
+        )
+        bound = BaselineFidelityPhaseCostBound.model_validate_json(
+            phase_bound.read_text(encoding="utf-8")
+        )
+        snapshot = WorkspaceSnapshot.model_validate_json(
+            workspace_snapshot.read_text(encoding="utf-8")
+        )
+        compute_policy = load_baseline_fidelity_policy(policy)
+        reservation = reserve_baseline_fidelity_in_ledger(
+            permit,
+            snapshot,
+            bound,
+            policy=compute_policy,
+            ledger_path=ledger,
+            output_path=output,
+        )
+    except (OSError, ScientificComputeDenied, TypeError, ValueError) as error:
+        _compute_blocked(str(error))
+    typer.echo(
+        "PASS baseline-fidelity reservation: "
+        f"known={reservation.known_usage_usd:.2f} "
+        f"pending={reservation.pending_worst_case_usd:.2f} "
+        f"new={reservation.new_phase_bound_usd:.2f} "
+        f"total={reservation.reserved_total_usd:.2f} <= 27.00"
+    )
+
+
+@compute_app.command("reconcile-baseline-fidelity")
+def reconcile_baseline_fidelity_command(
+    policy: Annotated[Path, typer.Option("--policy")],
+    authorization: Annotated[Path, typer.Option("--authorization")],
+    reservation: Annotated[Path, typer.Option("--reservation")],
+    launch_receipt: Annotated[Path, typer.Option("--launch-receipt")],
+    workspace_selection: Annotated[Path, typer.Option("--workspace-selection")],
+    budget_evidence: Annotated[Path, typer.Option("--budget-evidence")],
+    ledger: Annotated[Path, typer.Option("--ledger")],
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Reconcile one consumed fidelity reservation against current usage."""
+
+    try:
+        permit = BaselineFidelityAuthorization.model_validate_json(
+            authorization.read_text(encoding="utf-8")
+        )
+        reserved = BaselineFidelityCostReservation.model_validate_json(
+            reservation.read_text(encoding="utf-8")
+        )
+        launch = ConsumedPermit.model_validate_json(
+            launch_receipt.read_text(encoding="utf-8")
+        )
+        selection = WorkspaceSelection.model_validate_json(
+            workspace_selection.read_text(encoding="utf-8")
+        )
+        compute_policy = load_baseline_fidelity_policy(policy)
+        current_snapshot = attest_scientific_workspace(
+            selection,
+            budget_evidence,
+            compute_policy,
+        )
+        reconciliation = reconcile_baseline_fidelity_in_ledger(
+            permit,
+            reserved,
+            launch,
+            current_snapshot,
+            ledger_path=ledger,
+            output_path=output,
+        )
+    except (OSError, ScientificComputeDenied, TypeError, ValueError) as error:
+        _compute_blocked(str(error))
+    typer.echo(
+        "PASS baseline-fidelity reconciliation: "
+        f"workspace={reconciliation.workspace_id} "
+        f"metered_delta={reconciliation.metered_delta_usd:.2f} "
+        f"pending_remaining={reconciliation.pending_remaining_usd:.2f}"
+    )
 
 
 @lock_app.command("schema")

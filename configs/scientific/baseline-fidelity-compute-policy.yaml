@@ -1,0 +1,28 @@
+schema_version: "1.0"
+authorization_scope: baseline_fidelity
+provider: modal
+allowed_input_roles: [held_in, dedicated_calibration]
+forbidden_input_roles: [validation, final_test]
+forbid_model_selection: true
+forbid_claim_quality_metrics: true
+forbid_learned_ratemem_dictionary: true
+require_method_cpu_gate: false
+require_dataset_lock: true
+require_baseline_requirements: true
+require_comparator_catalog: true
+require_fidelity_policy: true
+require_source_inventory: true
+require_clean_commit_and_diff: true
+workspace_selection: explicit_operator_file
+profile_prefix: ratemem-scientific-
+automatic_workspace_discovery: false
+automatic_workspace_reuse: false
+automatic_workspace_rotation: false
+automatic_workspace_fallback: false
+outer_workspace_usage_budget_usd: "28.00"
+internal_reservation_limit_usd: "27.00"
+aggregate_ledger: /home/ubuntu/.local/state/ratemem/scientific-cost-ledger.jsonl
+reservation_formula: known_usage_plus_all_pending_worst_case_plus_new_phase_bound
+one_phase_per_authorization: true
+one_launch_per_reservation: true
+require_reconciliation_before_next_phase: true

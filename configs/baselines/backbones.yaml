@@ -1,0 +1,45 @@
+schema_version: "1.0"
+primary_backbone: sana_1_5_1_6b
+primary_backbone_is_fixed: true
+contextual_backbones: [sdxl_1_0]
+contextual_backbones_may_satisfy_primary_requirements: false
+future_contextual_promotion_requires_separately_reviewed_ratemem_extension: true
+published_different_backbone_numbers_are_contextual: true
+backbones:
+  sana_1_5_1_6b:
+    model_id: Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers
+    revision: b77948f2b4eed5c728e9b828ccff07f7427b43cc
+    architecture: sana_transformer
+    resolution: [1024, 1024]
+    target_suffixes: [to_q, to_k, to_v]
+    layout_lock_path: configs/scientific/layouts/sana_1_5_1_6b.json
+    comparison_role: primary
+    primary_eligible: true
+    ratemem_extension_available: true
+    expected_projection_count: 120
+    code_dim: 480
+  sdxl_1_0:
+    model_id: stabilityai/stable-diffusion-xl-base-1.0
+    revision: 462165984030d82259a11f4367a4eed129e94a7b
+    architecture: sdxl_unet
+    resolution: [1024, 1024]
+    target_suffixes: [to_q, to_k, to_v]
+    comparison_role: contextual_only
+    primary_eligible: false
+    ratemem_extension_available: false
+shared_input_scopes:
+  same_code_and_candidates:
+    - independent_fifo
+    - independent_lru
+    - independent_lrua
+    - private_progressive_size_aware
+    - private_progressive_separable_rate
+    - shared_packet_plain_greedy
+    - cts_style_static
+    - vb_lora_style_static
+    - share_style_online
+  same_amortizer_recompute: [stateless_amortizer]
+  feature_native: [dreamcache_feature_cache]
+  optimization_native: [per_concept_lora]
+  upstream_native: [hyperlora_upstream]
+  upper_reference: [exact_append_only_quantized, exact_future_trace_packets]
