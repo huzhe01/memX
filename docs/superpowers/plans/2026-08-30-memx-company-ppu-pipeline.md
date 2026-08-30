@@ -227,7 +227,7 @@ git commit -m "feat: validate distributed ppu launches"
 - Create: `tests/unit/data/test_manifest.py`
 - Create: `tests/integration/data/test_prepare_smoke.py`
 
-- [ ] **Step 1: Write failing manifest validation tests**
+- [x] **Step 1: Write failing manifest validation tests**
 
 ```python
 def test_manifest_rejects_mutable_revision(tmp_path: Path) -> None:
@@ -242,13 +242,13 @@ def test_manifest_rejects_split_overlap(tmp_path: Path) -> None:
         DatasetManifest.load(path)
 ```
 
-- [ ] **Step 2: Verify the data modules are missing**
+- [x] **Step 2: Verify the data modules are missing**
 
 Run: `uv run pytest tests/unit/data/test_manifest.py tests/integration/data/test_prepare_smoke.py -q`
 
 Expected: collection fails for `ratemem.data`.
 
-- [ ] **Step 3: Implement strict YAML loading and canonical hashing**
+- [x] **Step 3: Implement strict YAML loading and canonical hashing**
 
 ```python
 class DatasetManifest(BaseModel):
@@ -278,7 +278,7 @@ class DatasetManifest(BaseModel):
         return hashlib.sha256(payload).hexdigest()
 ```
 
-- [ ] **Step 4: Implement deterministic fixture episodes and atomic index publication**
+- [x] **Step 4: Implement deterministic fixture episodes and atomic index publication**
 
 ```python
 def prepare_smoke_dataset(manifest: DatasetManifest, root: Path) -> PreparedDataset:
@@ -298,13 +298,13 @@ def prepare_smoke_dataset(manifest: DatasetManifest, root: Path) -> PreparedData
     )
 ```
 
-- [ ] **Step 5: Prove byte-for-byte deterministic preparation**
+- [x] **Step 5: Prove byte-for-byte deterministic preparation**
 
 Run: `uv run pytest tests/unit/data tests/integration/data -q`
 
 Expected: two independent prepared roots have identical index and image hashes.
 
-- [ ] **Step 6: Commit data preparation**
+- [x] **Step 6: Commit data preparation**
 
 ```bash
 git add src/ratemem/data configs/data tests/unit/data tests/integration/data

@@ -1,0 +1,23 @@
+schema_version: memx-dataset-v1
+name: memx-smoke
+revision: 71ef669fa76b5e5fecdb0500d48c4bbd685a7668
+license_spdx: CC0-1.0
+profile: smoke
+source:
+  kind: generated
+  identifier: memx-smoke-rgb-v1
+splits:
+  - name: train
+    concepts:
+      - amber-cube
+      - blue-ring
+      - coral-arch
+      - silver-kite
+  - name: validation
+    concepts:
+      - green-star
+      - red-spiral
+  - name: test
+    concepts:
+      - violet-cone
+      - yellow-prism
