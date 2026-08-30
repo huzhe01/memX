@@ -630,7 +630,7 @@ git add docs/superpowers/plans/2026-08-30-memx-company-ppu-pipeline.md docs/runb
 git commit -m "docs: record memx release-one verification"
 ```
 
-- [ ] **Step 5: Push the non-default development branch**
+- [x] **Step 5: Push the non-default development branch**
 
 ```bash
 git push origin codex/ratemem-implementation
