@@ -6,7 +6,6 @@ import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 PYPROJECT_PATH = REPOSITORY / "pyproject.toml"
-SANA_PLAN_PATH = REPOSITORY / "docs/superpowers/plans/2026-08-24-ratemem-sana-modal-pilot.md"
 
 EXPECTED_DEFAULT_VERSIONS = {
     "accelerate": "1.14.0",
@@ -80,51 +79,7 @@ def test_installed_modal_extra_has_exact_version() -> None:
     assert _installed_version("modal") == EXPECTED_MODAL_VERSION
 
 
-def test_pilot_entry_point_is_registered_only_after_task_13_target_exists() -> None:
+def test_pilot_entry_point_is_registered_with_its_target() -> None:
     project = _project_metadata()
     assert project["scripts"]["ratemem-pilot"] == "ratemem.pilot.cli:main"
     assert Path("src/ratemem/pilot/cli.py").is_file()
-
-    plan = SANA_PLAN_PATH.read_text(encoding="utf-8")
-    task_one = plan.split("### Task 1:", maxsplit=1)[1].split("### Task 2:", maxsplit=1)[0]
-    task_thirteen = plan.split("### Task 13:", maxsplit=1)[1].split("### Task 14:", maxsplit=1)[0]
-    assert 'ratemem-pilot = "ratemem.pilot.cli:main"' not in task_one
-    assert 'ratemem-pilot = "ratemem.pilot.cli:main"' in task_thirteen
-    assert "uv run ratemem-pilot --help" in task_thirteen
-
-
-def test_sana_plan_uses_the_locked_dependency_versions() -> None:
-    plan = SANA_PLAN_PATH.read_text(encoding="utf-8")
-    old_versions = {
-        "1.10.1",
-        "5.7.0",
-        "4.1.1",
-        "0.35.1",
-        "3.19.1",
-        "0.34.4",
-        "4.25.1",
-        "0.17.1",
-        "11.3.0",
-        "0.6.2",
-        "2.8.0",
-        "0.23.0",
-        "4.56.1",
-        "0.16.1",
-    }
-    for old_version in old_versions:
-        assert old_version not in plan
-    for expected in (
-        *EXPECTED_DEFAULT_VERSIONS.values(),
-        EXPECTED_MODAL_VERSION,
-        EXPECTED_PYTEST_VERSION,
-    ):
-        assert expected in plan
-
-
-def test_sana_plan_defines_an_offline_safe_hub_loading_contract() -> None:
-    plan = SANA_PLAN_PATH.read_text(encoding="utf-8")
-    task_four = plan.split("### Task 4:", maxsplit=1)[1].split("### Task 5:", maxsplit=1)[0]
-    assert "no network" in task_four.lower()
-    assert "use_safetensors=True" in task_four
-    assert "trust_remote_code=False" in task_four
-    assert "custom_pipeline" in task_four

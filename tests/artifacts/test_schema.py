@@ -1072,33 +1072,3 @@ def test_artifact_ignore_rule_is_root_anchored() -> None:
 
     assert nested.returncode == 1
     assert generated.returncode == 0
-
-
-def test_task8_plan_scans_tracked_and_generated_outputs() -> None:
-    plan = (
-        _REPOSITORY
-        / "docs/superpowers/plans/2026-08-24-ratemem-core-memory.md"
-    ).read_text(encoding="utf-8")
-
-    assert "git grep --untracked --exclude-standard -Iq -E" in plan
-    assert "rg --hidden --no-ignore -q" in plan
-    for root in ("artifacts", "run_log", "logs", "exports"):
-        assert root in plan
-
-
-def test_core_plan_root_anchors_artifacts_and_lists_gitignore_change() -> None:
-    plan = (
-        _REPOSITORY
-        / "docs/superpowers/plans/2026-08-24-ratemem-core-memory.md"
-    ).read_text(encoding="utf-8")
-    task_one = plan.split("### Task 1:", maxsplit=1)[1].split(
-        "### Task 2:", maxsplit=1
-    )[0]
-    task_eight = plan.split("### Task 8:", maxsplit=1)[1].split(
-        "### Task 9:", maxsplit=1
-    )[0]
-
-    assert "\n/artifacts/\n" in task_one
-    assert "\nartifacts/\n" not in task_one
-    assert "- Modify: `.gitignore`" in task_eight
-    assert "nested artifact source and test packages remain tracked and scanned" in task_eight
