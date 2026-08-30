@@ -82,6 +82,18 @@ def schema_oracle_certificate(
     typer.echo(f"PASS oracle-certificate schema: {output}")
 
 
+@schema_app.command("external-message")
+def schema_external_message(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the strict external worker request/response schema."""
+
+    from ratemem.baselines.external_jsonl import external_message_schema
+
+    write_json_atomic(output, external_message_schema())
+    typer.echo(f"PASS external-message schema: {output}")
+
+
 def main() -> None:
     app()
 
