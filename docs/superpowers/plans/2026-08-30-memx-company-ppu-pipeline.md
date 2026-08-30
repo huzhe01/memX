@@ -520,7 +520,7 @@ git commit -m "feat: run resumable memx experiments"
 - Create: `docs/runbooks/company-ppu.md`
 - Create: `tests/contract/test_company_launch_surface.py`
 
-- [ ] **Step 1: Write failing source-contract tests**
+- [x] **Step 1: Write failing source-contract tests**
 
 ```python
 def test_ppu_container_does_not_install_or_replace_torch() -> None:
@@ -535,13 +535,13 @@ def test_makefile_exposes_complete_operator_surface() -> None:
         assert target in makefile
 ```
 
-- [ ] **Step 2: Verify launch-surface tests fail because files are absent**
+- [x] **Step 2: Verify launch-surface tests fail because files are absent**
 
 Run: `uv run pytest tests/contract/test_company_launch_surface.py -q`
 
 Expected: failure reading `docker/Dockerfile.ppu` or `Makefile`.
 
-- [ ] **Step 3: Add vendor-preserving container and bootstrap**
+- [x] **Step 3: Add vendor-preserving container and bootstrap**
 
 ```dockerfile
 ARG PPU_BASE_IMAGE=ppu-training:1.7.0-pytorch2.8-ppu-py312-cu129-ubuntu24.04
@@ -554,7 +554,7 @@ RUN python -m pip install --no-deps -e /workspace/memx
 ENTRYPOINT ["memx"]
 ```
 
-- [ ] **Step 4: Add generic torchrun launcher**
+- [x] **Step 4: Add generic torchrun launcher**
 
 ```bash
 exec torchrun \
@@ -566,13 +566,13 @@ exec torchrun \
   -m ratemem.experiment.cli train "$@"
 ```
 
-- [ ] **Step 5: Rewrite the README around the exact six-command path**
+- [x] **Step 5: Rewrite the README around the exact six-command path**
 
 Document prerequisites, clone command, PPU image build, public/company-mirror data preparation,
 single-node and multi-node examples, resume, outputs, test commands, and the explicit distinction
 between locally verified CPU behavior and company-only PPU gates.
 
-- [ ] **Step 6: Run shell, Make, and contract checks**
+- [x] **Step 6: Run shell, Make, and contract checks**
 
 ```bash
 bash -n scripts/bootstrap.sh scripts/launch_train.sh
@@ -582,7 +582,7 @@ uv run pytest tests/contract/test_company_launch_surface.py -q
 
 Expected: shell syntax exits zero, help lists all six targets, and contracts pass.
 
-- [ ] **Step 7: Commit the operator surface**
+- [x] **Step 7: Commit the operator surface**
 
 ```bash
 git add requirements docker scripts Makefile README.md docs/runbooks/company-ppu.md tests/contract/test_company_launch_surface.py

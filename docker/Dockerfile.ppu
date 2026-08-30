@@ -1,0 +1,21 @@
+ARG PPU_BASE_IMAGE
+FROM ${PPU_BASE_IMAGE}
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/workspace/memx/src \
+    MEMX_USE_VENDOR_ENV=1 \
+    DEVICE=ppu
+
+WORKDIR /workspace/memx
+
+COPY requirements/ppu.txt /tmp/memx/requirements/ppu.txt
+RUN python -m pip install --no-cache-dir -r /tmp/memx/requirements/ppu.txt
+
+COPY . /workspace/memx
+
+# Import validation is safe during image construction and does not require a visible card.
+RUN python -c "import torch, torchvision; import ratemem; print(torch.__version__, torchvision.__version__)"
+
+ENTRYPOINT ["/workspace/memx/scripts/run_memx.sh"]
+CMD ["--help"]

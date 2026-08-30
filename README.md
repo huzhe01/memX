@@ -1,92 +1,130 @@
-## Memory-GAN
-Memory based GAN for few-shot image generation
+# memX / RateMem-DiT
 
-## Data Preparation
-1.Omniglot:https://drive.google.com/drive/folders/15x2C11OrNeKLMzBDHrv8NPOwyre6H3O5  
+memX is the reproducible implementation that supersedes the unpublished 2020
+*Memory-MetaGAN* prototype. The new research direction studies byte-bounded, shared progressive
+adapter memory for optimization-free image personalization on a frozen diffusion transformer.
 
-2.VGGFace:https://drive.google.com/drive/folders/15x2C11OrNeKLMzBDHrv8NPOwyre6H3O5  
+The repository currently contains two deliberately separate execution surfaces:
 
-3.Animals: 
+- a locally verified, end-to-end orchestration fixture covering data preparation, distributed
+  runtime policy, optimization, atomic checkpoint/resume, evaluation, and reporting; and
+- the existing SANA-1.5 dynamic-adapter engineering code and guarded single-L40S Modal pilot.
 
-## Enviroment:
-以下几个需要安装：
-imageio              2.9.0  
+The fixture emits `publication_eligible=false`. It proves that the pipeline runs; it is not a
+CVPR result. Production RateMem/SANA training, matched baselines, and scientific datasets are being
+implemented on top of this interface and remain subject to real PPU validation.
 
-opencv-python        4.4.0.44  
+## Clone
 
-Pillow               8.0.1  
+Until the implementation branch is promoted to the default branch, clone it explicitly:
 
-tensorboard          1.13.1  
+```bash
+git clone --branch codex/ratemem-implementation \
+  https://github.com/huzhe01/memX.git
+cd memX
+```
 
-tensorflow-gpu       1.13.1  
+No access token belongs in the clone URL, repository, command history, or experiment artifact.
 
-## 主要代码文件说明:
-- 训练部分
-0. 数据准备：/data_with_matchingclassifier.py  
-1. ./dagan_architectures_with_matchingclassifier.py  
-dagan_architecutre：重新设计了DAGAN的结构，主要包括Uresnet_gernerator和Discriminator。
-2. ./dagan_networks_wgan_with_matchingclassifier.py
-写了DAGAN这个类，继承了Uresnet和Discriminator。并包含了计算loss的方法。
-3. ./experiment_builder_with_matchingclassifier.py
-这个是入口函数，GAN网络结构的初始化，写了run_experiment方法。
-4. ./train_dagan_with_matchingclassifier.py 
-准备data,实例化expriment_builder,调用run_experiment方法
- 
-- 生成部分  
+## Five-minute CPU verification
 
-1.generation_builder_with_matchingclassifier.py
-生成图片的实验设置
-2.test_dagan_with_matchingclassifier_for_generation.py
-run_generate.sh: 入口函数，准备data,实例化expriment_builder,调用run_experiment方法
+Install [uv](https://docs.astral.sh/uv/) 0.8.14 and run:
 
-目前的网络结构使用的是U-net一种encoder+decoder网络的结构，参考了DAGAN(https://github.com/AntreasAntoniou/DAGAN)
-## todo
-代码主要是基于DAGAN这篇文章做的改动，优先使用VGGface数据集，实现下面任务。训练可以设置为1way-3shot的形式。
-### 目前需要实现功能: 
-- [ ] 记忆力机制, 如何读取和存储
-- [ ] 高斯混合采样
-- [ ] 其他多样性生成的探索(如插值)
+```bash
+make bootstrap
+make data DATA_ROOT=/tmp/memx-data
+make smoke DEVICE=cpu DATA_ROOT=/tmp/memx-data RUN_ROOT=/tmp/memx-run
+make evaluate DEVICE=cpu DATA_ROOT=/tmp/memx-data RUN_ROOT=/tmp/memx-run
+make report RUN_ROOT=/tmp/memx-run
+```
 
+The smoke profile generates eight deterministic CC0 fixture concepts locally. It performs no
+network download. Outputs include:
 
-### Note:以下任务在testing data上做
-### 小样本生成图像效果对比(重点对比):
+```text
+/tmp/memx-run/
+├── checkpoints/step-00000006/
+├── metrics.jsonl
+├── train-result.json
+├── evaluation.json
+└── report/
+    ├── report.json
+    ├── metrics.csv
+    └── REPORT.md
+```
 
-- [x] FIGR
+## Resume an interrupted run
 
-- [x] DAGAN
+Checkpoints are published only after their tensor and state hashes validate. Continue the same run
+with:
 
-- [x] MATCHING GAN
+```bash
+make train DEVICE=cpu DATA_ROOT=/tmp/memx-data RUN_ROOT=/tmp/memx-run RESUME=auto
+```
 
-- [x] F2GAN
+A changed experiment config or prepared dataset hash blocks resume. `RESUME=never` never overwrites
+an existing run.
 
-  PS: 
-  
-- [x] GAN的评价指标实现IS,FID(已经实现，还未测试效果)
+## PPU-ZW810E container
 
-  完成状态：代码跑通，但尚未系统性地整理结果
+Supply a company base image containing its compatible Python, PyTorch, torchvision, PPU SDK, and
+PCCL. The memX image installs only non-framework Python dependencies, so it does not replace the
+vendor torch build:
 
-### 分类任务: 
-low data classification: 拿一个训练好的分类器做分类任务
+```bash
+docker build \
+  --build-arg PPU_BASE_IMAGE=registry.company/ppu-pytorch:approved \
+  -f docker/Dockerfile.ppu \
+  -t memx:ppu .
+```
 
-- [x] 传统数据增强方法
-- [ ] memory GAN
-- [x] DAGAN
-- [x] Matching GAN
-- [x] F2GAN
-- [ ] GMN
-- [ ] DAWSON
+Inside the image:
 
-few-shot classification: 暂时hold
+```bash
+make bootstrap DEVICE=ppu
+make data DEVICE=ppu DATA_ROOT=/data/memx
+make smoke DEVICE=ppu DATA_ROOT=/data/memx RUN_ROOT=/output/memx-smoke
+make train DEVICE=ppu WORLD_SIZE=8 LOCAL_WORLD_SIZE=8 \
+  DATA_ROOT=/data/memx RUN_ROOT=/output/memx-train
+make evaluate DEVICE=ppu WORLD_SIZE=8 LOCAL_WORLD_SIZE=8 \
+  DATA_ROOT=/data/memx RUN_ROOT=/output/memx-train
+make report RUN_ROOT=/output/memx-train
+```
 
-### 增量学习任务:
-- [ ] Memory GAN
-- [ ] DAGAN
-- [ ] Matching GAN
-- [ ] F2GAN
+If the vendor registers PCCL under a compatibility name, set it explicitly, for example
+`RATEMEM_DIST_BACKEND=vendor_pccl`. An explicit PPU request never falls back to CPU.
 
-### ablation study：
+The exact 1/8/16-card validation sequence is in
+[`docs/runbooks/company-ppu.md`](docs/runbooks/company-ppu.md). Those hardware gates are not marked
+passed until their commands run on real company PPU-ZW810E devices.
 
-- [ ] 给定的图片数量
-- [ ] 有无记忆力机制
-- [ ] 有无混合高斯分布
+## Data policy
 
+Raw datasets and frozen model weights are not stored in Git. Checked-in manifests bind the dataset
+identity, immutable revision, SPDX license, disjoint train/validation/test concepts, and prepared
+content hashes. Production manifests will support public sources and company mirrors through
+`MEMX_DATA_MIRROR` and `MEMX_MODEL_MIRROR` without changing the locked identities.
+
+The current runnable profile is:
+
+```text
+configs/data/smoke.yaml
+configs/experiments/smoke.yaml
+```
+
+The earlier `configs/pilot/subjects200k-held-in.json` remains an eight-row engineering-only cache
+contract and must not be used as publication evidence.
+
+## Development verification
+
+```bash
+uv sync --all-extras --frozen
+uv run ruff check src tests
+uv run mypy src/ratemem
+uv run pytest -q -m 'not paid_modal and not real_sana and not cuda and not ppu'
+bash -n scripts/*.sh
+git diff --check
+```
+
+The historical TensorFlow/GAN files remain at the repository root for provenance. New development
+lives under `src/ratemem`, `configs`, `scripts`, `tests`, and `docs`.

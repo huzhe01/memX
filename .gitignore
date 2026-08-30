@@ -6,6 +6,7 @@ __pycache__/
 *.py[cod]
 /artifacts/
 data/cache/
+/data/memx/
 .env
 .env.*
 *.pem
