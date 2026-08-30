@@ -1,0 +1,39 @@
+schema_version: "1.0"
+sources:
+  - source_id: hyperlora_upstream
+    methods: [hyperlora_upstream]
+    kind: git
+    repository_url: https://github.com/bytedance/ComfyUI-HyperLoRA.git
+    license_required_for_execution: true
+  - source_id: dreamcache_upstream
+    methods: [dreamcache_feature_cache]
+    kind: git
+    repository_url: https://github.com/Emanuele97x/DreamCache.git
+    license_required_for_execution: true
+  - source_id: share_upstream
+    methods: [share_style_online]
+    kind: git
+    repository_url: https://github.com/ankit-vaidya19/Share.git
+    license_required_for_execution: true
+  - source_id: vb_lora_upstream
+    methods: [vb_lora_style_static]
+    kind: git
+    repository_url: https://github.com/leo-yangli/VB-LoRA.git
+    license_required_for_execution: false
+  - source_id: compress_then_serve_paper
+    methods: [cts_style_static]
+    kind: paper
+    canonical_url: https://proceedings.mlr.press/v267/gabrielsson25a.html
+    license_required_for_execution: false
+  - source_id: diffusers_upstream
+    methods: [per_concept_lora]
+    kind: installed_distribution
+    distribution: diffusers
+    locked_version: "0.40.0"
+    license_required_for_execution: true
+  - source_id: peft_upstream
+    methods: [per_concept_lora]
+    kind: installed_distribution
+    distribution: peft
+    locked_version: "0.20.0"
+    license_required_for_execution: true

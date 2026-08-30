@@ -14,8 +14,10 @@ from ratemem.evaluation.canonical import write_json_atomic
 app = typer.Typer(no_args_is_help=True, help="RateMem matched-baseline tooling.")
 catalog_app = typer.Typer(no_args_is_help=True, help="Comparator catalog tools.")
 schema_app = typer.Typer(no_args_is_help=True, help="Write matched-baseline schemas.")
+source_app = typer.Typer(no_args_is_help=True, help="Resolve and verify source inventories.")
 app.add_typer(catalog_app, name="catalog")
 app.add_typer(schema_app, name="schema")
+app.add_typer(source_app, name="sources")
 
 
 @catalog_app.command("schema")
@@ -116,6 +118,55 @@ def schema_runtime_registry(
 
     write_json_atomic(output, RuntimeRegistryLock.model_json_schema())
     typer.echo(f"PASS runtime-registry schema: {output}")
+
+
+@schema_app.command("source-inventory")
+def schema_source_inventory(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the sealed source inventory schema."""
+
+    from ratemem.baselines.sources import SourceInventory
+
+    write_json_atomic(output, SourceInventory.model_json_schema())
+    typer.echo(f"PASS source-inventory schema: {output}")
+
+
+@source_app.command("resolve")
+def resolve_sources(
+    registry: Annotated[Path, typer.Option("--registry")],
+    cache_dir: Annotated[Path, typer.Option("--cache-dir")],
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Resolve, archive, license-audit, and seal all registered sources."""
+
+    from ratemem.baselines.sources import (
+        build_source_inventory,
+        inventory_source,
+        load_source_registry,
+    )
+
+    if output.exists() or output.is_symlink():
+        raise typer.BadParameter("source inventory output already exists")
+    configured = load_source_registry(registry)
+    records = tuple(inventory_source(entry, cache_dir=cache_dir) for entry in configured.sources)
+    inventory = build_source_inventory(records)
+    write_json_atomic(output, inventory.model_dump(mode="json"))
+    typer.echo(f"PASS source inventory: {output} {inventory.inventory_sha256}")
+
+
+@source_app.command("verify")
+def verify_sources(
+    inventory: Annotated[Path, typer.Option("--inventory")],
+) -> None:
+    """Verify sealed source artifacts without performing network access."""
+
+    from ratemem.baselines.sources import load_source_inventory, verify_source_record
+
+    loaded = load_source_inventory(inventory)
+    for record in loaded.records:
+        verify_source_record(record)
+    typer.echo(f"PASS source inventory: {loaded.inventory_sha256}")
 
 
 def main() -> None:
