@@ -13,15 +13,20 @@ from ratemem.baselines.ledger import (
     export_state,
     ledger_from_export,
 )
-from ratemem.baselines.online_share import update_subspace
-from ratemem.baselines.private_progressive import RateChoice, exact_separable_allocation
+from ratemem.baselines.online_share import OnlineShareAdapter, update_subspace
+from ratemem.baselines.private_progressive import (
+    PrivateProgressiveAdapter,
+    RateChoice,
+    exact_separable_allocation,
+)
 from ratemem.baselines.protocol import CausalEventView, FrozenComparisonContract, FutureAccessError
+from ratemem.baselines.shared_greedy import SharedPacketGreedyAdapter
 from ratemem.baselines.shared_inputs import (
     CandidateAccessError,
     SharedInputReader,
     materialize_fixture_bundle,
 )
-from ratemem.baselines.static_shared import CtsCodebook, VbCodebook
+from ratemem.baselines.static_shared import CtsCodebook, StaticSharedAdapter, VbCodebook
 from ratemem.evaluation.traces import CreateEvent
 
 
@@ -120,6 +125,69 @@ def test_independent_cache_export_restores_the_next_exact_receipt(tmp_path: Path
         events[1],
         CausalEventView(events, 1),
     )
+
+
+def test_all_native_code_controls_restore_the_next_exact_receipt(tmp_path: Path) -> None:
+    bundle = materialize_fixture_bundle(tmp_path / "bundle")
+    contract = _contract(bundle.manifest.candidate_stream_sha256)
+    events = _events()
+    codebook_file = tmp_path / "codebook.bin"
+    codebook_file.write_bytes(b"locked-codebook-fixture")
+    cts = CtsCodebook.from_fixture(
+        group_bases=(np.eye(4, 480, dtype=np.float32),),
+        quantization_bits=16,
+    )
+    vb = VbCodebook.from_fixture(
+        bank=np.tile(np.eye(16, dtype=np.float32), (2, 1)),
+        subvector_size=16,
+        top_k=2,
+        weight_bits=16,
+    )
+    factories = {
+        "private_progressive_size_aware": lambda reader: PrivateProgressiveAdapter(
+            "private_progressive_size_aware",
+            policy="size_aware",
+            shared_inputs=reader,
+        ),
+        "private_progressive_separable_rate": lambda reader: PrivateProgressiveAdapter(
+            "private_progressive_separable_rate",
+            policy="separable_rate",
+            shared_inputs=reader,
+        ),
+        "shared_packet_plain_greedy": lambda reader: SharedPacketGreedyAdapter(
+            shared_inputs=reader
+        ),
+        "cts_style_static": lambda reader: StaticSharedAdapter(
+            "cts_style_static",
+            codebook=cts,
+            codebook_file=codebook_file,
+            shared_inputs=reader,
+        ),
+        "vb_lora_style_static": lambda reader: StaticSharedAdapter(
+            "vb_lora_style_static",
+            codebook=vb,
+            codebook_file=codebook_file,
+            shared_inputs=reader,
+        ),
+        "share_style_online": lambda reader: OnlineShareAdapter(
+            rank=2,
+            shared_inputs=reader,
+        ),
+    }
+    for method_id, factory in factories.items():
+        reader = SharedInputReader(bundle, method_id)
+        original = factory(reader)
+        original.initialize(contract)
+        original.apply_event(events[0], CausalEventView(events, 0))
+        exported = original.export_online_state()
+        restored = factory(reader)
+        restored.initialize(contract)
+        restored.import_online_state(exported)
+        assert restored.export_online_state() == exported
+        assert restored.apply_event(
+            events[1],
+            CausalEventView(events, 1),
+        ) == original.apply_event(events[1], CausalEventView(events, 1))
 
 
 def test_rate_static_and_online_controls_have_distinct_exact_algorithms() -> None:
