@@ -701,6 +701,11 @@ git commit -m "data: freeze audited scientific dataset lock"
 
 ### Task 5: Freeze sample size and generate concept-disjoint lifecycle trace manifests
 
+> Execution note (2026-08-30): the calibration planner, schemas, deterministic trace generator,
+> tamper checks, and visible-only CLI are verified on synthetic locked inputs. Steps 4, 11, and 12
+> remain open because no real calibration record, required-unit freeze, or committed development
+> trace manifests exist yet; `final_test` is explicitly rejected by the visible CLI.
+
 **Files:**
 - Create: `configs/scientific/trace-policy.yaml`
 - Create: `src/ratemem/evaluation/statistics.py`
@@ -712,7 +717,7 @@ git commit -m "data: freeze audited scientific dataset lock"
 - Test: `tests/unit/evaluation/test_traces.py`
 - Test: `tests/contract/evaluation/test_trace_manifest.py`
 
-- [ ] **Step 1: Write the failing CI-width and power-planning tests**
+- [x] **Step 1: Write the failing CI-width and power-planning tests**
 
 ```python
 def test_required_units_uses_larger_ci_or_power_requirement(calibration_record: CalibrationRecord) -> None:
@@ -735,13 +740,13 @@ def test_power_record_rejects_final_test_concepts(calibration_record: Calibratio
         plan_required_units(calibration_record, 0.02, 0.03, 0.05, 0.80, 12, 314159)
 ```
 
-- [ ] **Step 2: Run the power-planning test and verify failure**
+- [x] **Step 2: Run the power-planning test and verify failure**
 
 Run: `uv run pytest tests/unit/evaluation/test_power_planning.py -q`
 
 Expected: collection fails because `ratemem.evaluation.statistics` does not exist.
 
-- [ ] **Step 3: Implement the calibration record and deterministic planning simulation**
+- [x] **Step 3: Implement the calibration record and deterministic planning simulation**
 
 Define `CalibrationRecord` with immutable dataset/evaluator/pool hashes, `split: Literal["calibration"]`, paired pilot effect rows, inference-unit ID, metric ID, and source artifact hashes. Implement `plan_required_units(record: CalibrationRecord, maximum_half_width: float, minimum_effect: float, alpha: float, power: float, minimum_units: int, simulation_seed: int) -> RequiredUnits`; use cluster resampling of inference units, find the smallest unit count whose simulated 95% CI half-width is at most 0.02 and power is at least 0.80, then select the larger CI/power count. Record the whole search curve, Monte Carlo draws, seed, and calibration hash.
 
@@ -761,7 +766,7 @@ uv run ratemem-eval stats plan-units \
 
 Expected: exit 0 and stdout matches `^PASS power-plan: final deployment episodes=[0-9]+; target_half_width=0.02; power=0.80$`. The calibration record schema rejects final-test pools, architecture/model-selection outputs, or mutable evaluator revisions.
 
-- [ ] **Step 5: Prespecify event generation and namespaces**
+- [x] **Step 5: Prespecify event generation and namespaces**
 
 ```yaml
 # configs/scientific/trace-policy.yaml
@@ -792,7 +797,7 @@ final_payload_visibility: encrypted_until_signed_freeze
 
 Trace count and event count do not live in this policy: they are copied from `configs/scientific/required-units.json`, produced before comparative model development; the later evaluation lock binds that record and every generated trace hash. This prevents both an arbitrary trace ceiling and a trace/evaluation-lock dependency cycle.
 
-- [ ] **Step 6: Write failing event and trace-separation tests**
+- [x] **Step 6: Write failing event and trace-separation tests**
 
 ```python
 def test_trace_is_deterministic_and_read_probe_semantics_differ(pools: ConceptPools) -> None:
@@ -818,13 +823,13 @@ def test_update_is_labeled_and_delete_never_reuses_handle(pools: ConceptPools) -
     assert deleted.isdisjoint(later_creates)
 ```
 
-- [ ] **Step 7: Run the trace tests and verify failure**
+- [x] **Step 7: Run the trace tests and verify failure**
 
 Run: `uv run pytest tests/unit/evaluation/test_traces.py -q`
 
 Expected: collection fails because `ratemem.evaluation.traces` does not exist.
 
-- [ ] **Step 8: Implement the discriminated event schema**
+- [x] **Step 8: Implement the discriminated event schema**
 
 ```python
 class CreateEvent(BaseModel):
@@ -876,13 +881,13 @@ LifecycleEvent = Annotated[
 
 Define `TraceManifest` with `trace_id`, `split`, `dataset_lock_id`, `trace_builder_revision`, `trace_seed`, `seed_namespace`, `request_regime`, `protocol`, `concept_pool_sha256`, `prompt_pool_sha256`, `payload_path`, `payload_sha256`, event counts by kind, and sorted concept/trace/seed commitments. Validate legal handle state transitions during construction.
 
-- [ ] **Step 9: Implement deterministic generation and manifest hashes**
+- [x] **Step 9: Implement deterministic generation and manifest hashes**
 
 Provide these concrete interfaces: `build_trace(split: Split, trace_index: int, pools: ConceptPools, policy: TracePolicy, event_count: int) -> Trace`; `build_trace_set(pools: AllPools, policy: TracePolicy, counts: Mapping[Split, int], event_count: int) -> dict[Split, TraceSet]`; and `write_trace_set(trace_set: TraceSet, output_dir: Path) -> list[TraceManifest]`.
 
 Derive each PRNG with `numpy.random.SeedSequence([dataset_lock_prefix, split_namespace_hash, trace_index])`; never share a generator across splits. Insert deterministic `PROBE` schedules separately from operational events so they cannot change event probabilities. Hash canonical JSONL payload bytes and validate the manifest against the generated schema.
 
-- [ ] **Step 10: Generate the schemas and verify manifest tamper detection**
+- [x] **Step 10: Generate the schemas and verify manifest tamper detection**
 
 The contract test writes a manifest, changes one prompt seed in the JSONL payload, and asserts `TraceHashMismatch` before replay.
 

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+import shutil
+import tempfile
 from pathlib import Path
-from typing import Annotated, Literal, Never
+from typing import Annotated, Literal, Never, cast
 
 import typer
+import yaml  # type: ignore[import-untyped]
 
-from ratemem.evaluation.canonical import write_json_atomic
+from ratemem.evaluation.canonical import semantic_sha256, write_json_atomic
 from ratemem.evaluation.dataset_lock import (
     DatasetLock,
     DatasetLockError,
@@ -25,13 +30,29 @@ from ratemem.evaluation.pools import (
     PoolManifestLine,
     build_pools_from_catalogs,
 )
+from ratemem.evaluation.statistics import (
+    CalibrationRecord,
+    RequiredUnits,
+    plan_required_units,
+)
+from ratemem.evaluation.traces import (
+    AllPools,
+    TraceManifest,
+    TracePolicy,
+    build_trace_set,
+    write_trace_set,
+)
 
 app = typer.Typer(
     no_args_is_help=True,
     help="RateMem-DiT locked scientific evaluation.",
 )
 data_app = typer.Typer(no_args_is_help=True, help="Audit and seal dataset inventories.")
+stats_app = typer.Typer(no_args_is_help=True, help="Freeze calibration and sample-size records.")
+traces_app = typer.Typer(no_args_is_help=True, help="Build and verify lifecycle traces.")
 app.add_typer(data_app, name="data")
+app.add_typer(stats_app, name="stats")
+app.add_typer(traces_app, name="traces")
 
 
 @app.callback()
@@ -164,6 +185,145 @@ def feature_encoder_lock(
     typer.echo(
         f"PASS duplicate-feature-encoder lock: revision={lock.immutable_revision} "
         f"weights={lock.weights_sha256}"
+    )
+
+
+@stats_app.command("schema-calibration")
+def calibration_schema(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the strict calibration-record schema."""
+
+    write_json_atomic(output, CalibrationRecord.model_json_schema())
+    typer.echo(f"PASS calibration-record schema: {output}")
+
+
+@stats_app.command("plan-units")
+def plan_units(
+    calibration_record: Annotated[Path, typer.Option("--calibration-record")],
+    maximum_half_width: Annotated[float, typer.Option("--maximum-half-width")],
+    minimum_effect: Annotated[float, typer.Option("--minimum-effect")],
+    alpha: Annotated[float, typer.Option("--alpha")],
+    power: Annotated[float, typer.Option("--power")],
+    minimum_units: Annotated[int, typer.Option("--minimum-units")],
+    simulation_seed: Annotated[int, typer.Option("--simulation-seed")],
+    output: Annotated[Path, typer.Option("--output")],
+    monte_carlo_draws: Annotated[int, typer.Option("--monte-carlo-draws")] = 2048,
+) -> None:
+    """Plan deployment episodes from a calibration-only paired record."""
+
+    if output.exists() or output.is_symlink():
+        typer.echo("BLOCKED power-plan: output already exists", err=True)
+        raise typer.Exit(code=2)
+    try:
+        record = CalibrationRecord.model_validate_json(
+            calibration_record.read_text(encoding="utf-8")
+        )
+        required = plan_required_units(
+            record,
+            maximum_half_width,
+            minimum_effect,
+            alpha,
+            power,
+            minimum_units,
+            simulation_seed,
+            monte_carlo_draws=monte_carlo_draws,
+        )
+        write_json_atomic(output, required.model_dump(mode="json"))
+    except (OSError, TypeError, ValueError) as error:
+        if output.exists():
+            output.unlink()
+        typer.echo(f"BLOCKED power-plan: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    typer.echo(
+        f"PASS power-plan: final deployment episodes={required.required_units}; "
+        f"target_half_width={maximum_half_width:.2f}; power={power:.2f}"
+    )
+
+
+@traces_app.command("schema")
+def trace_schema(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the strict visible trace-manifest schema."""
+
+    write_json_atomic(output, TraceManifest.model_json_schema())
+    typer.echo(f"PASS trace-manifest schema: {output}")
+
+
+@traces_app.command("build-visible")
+def build_visible_traces(
+    dataset_lock: Annotated[Path, typer.Option("--dataset-lock")],
+    policy: Annotated[Path, typer.Option("--policy")],
+    power_record: Annotated[Path, typer.Option("--power-record")],
+    splits: Annotated[str, typer.Option("--splits")],
+    output: Annotated[Path, typer.Option("--output")],
+    concept_pools: Annotated[
+        Path,
+        typer.Option("--concept-pools"),
+    ] = Path("artifacts/scientific/dataset-audit/concept-pools.json"),
+) -> None:
+    """Build only development-visible trace payloads from frozen inputs."""
+
+    raw_requested = tuple(part.strip() for part in splits.split(",") if part.strip())
+    if (
+        not raw_requested
+        or len(raw_requested) != len(set(raw_requested))
+        or any(split not in {"train", "validation"} for split in raw_requested)
+    ):
+        typer.echo(
+            "BLOCKED traces: visible builds accept unique train and validation splits only",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    requested = cast(tuple[Literal["train", "validation"], ...], raw_requested)
+    if output.exists() or output.is_symlink():
+        typer.echo("BLOCKED traces: output already exists", err=True)
+        raise typer.Exit(code=2)
+
+    staging: Path | None = None
+    try:
+        lock_payload = yaml.safe_load(dataset_lock.read_text(encoding="utf-8"))
+        locked_dataset = DatasetLock.model_validate(lock_payload)
+        if semantic_sha256(locked_dataset.model_dump(mode="json")) != locked_dataset.lock_id:
+            raise ValueError("dataset lock content hash changed")
+        required = RequiredUnits.model_validate_json(
+            power_record.read_text(encoding="utf-8")
+        )
+        if hashlib.sha256(required.semantic_bytes).hexdigest() != required.record_sha256:
+            raise ValueError("required-unit record content hash changed")
+        all_pools = AllPools.load(concept_pools)
+        if all_pools.dataset_lock_id != locked_dataset.lock_id:
+            raise ValueError("concept pools do not bind the selected dataset lock")
+        trace_policy = TracePolicy.load(policy)
+        count = required.required_units
+        trace_sets = build_trace_set(
+            all_pools,
+            trace_policy,
+            counts={"train": count, "validation": count, "final_test": count},
+            event_count=trace_policy.events_per_deployment_episode,
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(
+            tempfile.mkdtemp(
+                dir=output.parent,
+                prefix=f".{output.name}.staging-",
+            )
+        )
+        for split in requested:
+            write_trace_set(trace_sets[split], staging / split)
+        os.chmod(staging, 0o755)
+        os.replace(staging, output)
+        staging = None
+    except (OSError, TypeError, ValueError) as error:
+        typer.echo(f"BLOCKED traces: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging)
+    labels = " and ".join(requested)
+    typer.echo(
+        f"PASS traces: {labels} manifests have disjoint concepts, ids, and seeds"
     )
 
 

@@ -1,0 +1,23 @@
+schema_version: "1.0"
+builder_revision: lifecycle_trace_v1
+seed_namespaces:
+  train: "ratemem:trace:train:v1"
+  validation: "ratemem:trace:validation:v1"
+  final_test: "ratemem:trace:final-test:v1"
+event_probabilities:
+  create: 0.20
+  update: 0.10
+  read: 0.55
+  delete: 0.15
+support_shots: [1, 3, 5]
+maximum_update_support: 10
+locked_active_set_size: 20
+events_per_deployment_episode: 240
+request_regimes:
+  uniform: {kind: uniform}
+  zipf: {kind: zipf, exponent: 1.2}
+protocols: [no_pressure, budget_pressure, autonomous_lookup]
+prompt_seed_pairing: strict
+probe_update_usage: false
+handle_format: "h_<trace-prefix>_<event-index>"
+final_payload_visibility: encrypted_until_signed_freeze

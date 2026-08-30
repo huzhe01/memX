@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "dataset_lock_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "splits": {
+    "train": {
+      "concepts": [
+        {"concept_token": "<concept_000101>", "description_id": "description_train_1", "support_image_ids": ["train_1_s1", "train_1_s2", "train_1_s3", "train_1_s4", "train_1_s5"], "prompt_ids": ["train_1_p1", "train_1_p2"]},
+        {"concept_token": "<concept_000102>", "description_id": "description_train_2", "support_image_ids": ["train_2_s1", "train_2_s2", "train_2_s3", "train_2_s4", "train_2_s5"], "prompt_ids": ["train_2_p1", "train_2_p2"]},
+        {"concept_token": "<concept_000103>", "description_id": "description_train_3", "support_image_ids": ["train_3_s1", "train_3_s2", "train_3_s3", "train_3_s4", "train_3_s5"], "prompt_ids": ["train_3_p1", "train_3_p2"]}
+      ]
+    },
+    "validation": {
+      "concepts": [
+        {"concept_token": "<concept_000201>", "description_id": "description_validation_1", "support_image_ids": ["validation_1_s1", "validation_1_s2", "validation_1_s3", "validation_1_s4", "validation_1_s5"], "prompt_ids": ["validation_1_p1", "validation_1_p2"]},
+        {"concept_token": "<concept_000202>", "description_id": "description_validation_2", "support_image_ids": ["validation_2_s1", "validation_2_s2", "validation_2_s3", "validation_2_s4", "validation_2_s5"], "prompt_ids": ["validation_2_p1", "validation_2_p2"]},
+        {"concept_token": "<concept_000203>", "description_id": "description_validation_3", "support_image_ids": ["validation_3_s1", "validation_3_s2", "validation_3_s3", "validation_3_s4", "validation_3_s5"], "prompt_ids": ["validation_3_p1", "validation_3_p2"]}
+      ]
+    },
+    "final_test": {
+      "concepts": [
+        {"concept_token": "<concept_000301>", "description_id": "description_final_1", "support_image_ids": ["final_1_s1", "final_1_s2", "final_1_s3", "final_1_s4", "final_1_s5"], "prompt_ids": ["final_1_p1", "final_1_p2"]},
+        {"concept_token": "<concept_000302>", "description_id": "description_final_2", "support_image_ids": ["final_2_s1", "final_2_s2", "final_2_s3", "final_2_s4", "final_2_s5"], "prompt_ids": ["final_2_p1", "final_2_p2"]},
+        {"concept_token": "<concept_000303>", "description_id": "description_final_3", "support_image_ids": ["final_3_s1", "final_3_s2", "final_3_s3", "final_3_s4", "final_3_s5"], "prompt_ids": ["final_3_p1", "final_3_p2"]}
+      ]
+    }
+  }
+}
