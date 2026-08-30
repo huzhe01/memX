@@ -169,6 +169,23 @@ class CausalEventView(Sequence[LifecycleEvent]):
         return self._events[: self._current + 1]
 
 
+def validate_operational_event_order(
+    last_operational_event_index: int | None,
+    event: LifecycleEvent,
+    view: CausalEventView,
+) -> None:
+    """Allow only read-only probes between consecutive mutable transitions."""
+
+    if isinstance(event, ProbeEvent):
+        raise TypeError("probe events are not operational transitions")
+    start = 0 if last_operational_event_index is None else last_operational_event_index + 1
+    if event.event_index < start:
+        raise ValueError("operational event was already applied or is out of order")
+    for skipped_index in range(start, event.event_index):
+        if not isinstance(view.at(skipped_index), ProbeEvent):
+            raise ValueError("events must be applied exactly once in trace order")
+
+
 @runtime_checkable
 class BaselineAdapter(Protocol):
     """Canonical causal adapter interface used by matched replay."""
@@ -210,4 +227,5 @@ __all__ = [
     "FutureAccessError",
     "MethodSnapshot",
     "ProbeResult",
+    "validate_operational_event_order",
 ]

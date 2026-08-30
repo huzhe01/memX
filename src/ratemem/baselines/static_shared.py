@@ -28,6 +28,7 @@ from ratemem.baselines.protocol import (
     FrozenComparisonContract,
     MethodSnapshot,
     ProbeResult,
+    validate_operational_event_order,
 )
 from ratemem.baselines.shared_inputs import SharedInputReader
 from ratemem.evaluation.canonical import canonical_json_bytes, file_sha256
@@ -643,8 +644,7 @@ class StaticSharedAdapter:
             raise TypeError("probe events must use score_probe")
         if event.event_index != view.current_index or view.at(event.event_index) != event:
             raise ValueError("event and causal view are not aligned")
-        if self._last_event_index is not None and event.event_index != self._last_event_index + 1:
-            raise ValueError("events must be applied exactly once in trace order")
+        validate_operational_event_order(self._last_event_index, event, view)
         before = self.state_ledger()
         self._last_event_index = event.event_index
         records = dict(self._records)

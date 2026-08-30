@@ -94,6 +94,30 @@ def schema_external_message(
     typer.echo(f"PASS external-message schema: {output}")
 
 
+@schema_app.command("paired-replay")
+def schema_paired_replay(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the paired lifecycle replay schema."""
+
+    from ratemem.baselines.replay import PairedReplay
+
+    write_json_atomic(output, PairedReplay.model_json_schema())
+    typer.echo(f"PASS paired-replay schema: {output}")
+
+
+@schema_app.command("runtime-registry")
+def schema_runtime_registry(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the source-hashed runtime factory registry schema."""
+
+    from ratemem.baselines.registry import RuntimeRegistryLock
+
+    write_json_atomic(output, RuntimeRegistryLock.model_json_schema())
+    typer.echo(f"PASS runtime-registry schema: {output}")
+
+
 def main() -> None:
     app()
 
