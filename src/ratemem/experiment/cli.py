@@ -9,8 +9,13 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
+from ratemem.data import load_data_manifest
 from ratemem.data.manifest import DatasetManifest
 from ratemem.data.prepare import PreparedDataset, prepare_dataset
+from ratemem.data.subjects200k import (
+    Subjects200KManifest,
+    prepare_subjects200k_snapshot,
+)
 from ratemem.experiment.config import ExperimentConfig
 from ratemem.experiment.report import render_report
 from ratemem.experiment.runner import evaluate_fixture, train_fixture
@@ -83,6 +88,11 @@ def _parser() -> argparse.ArgumentParser:
     prepare = data_commands.add_parser("prepare", help="prepare and verify a dataset")
     prepare.add_argument("--config", type=Path, required=True)
     prepare.add_argument("--root", type=Path, required=True)
+    prepare.add_argument(
+        "--offline",
+        action="store_true",
+        help="require every pinned remote shard to exist in the local Hugging Face cache",
+    )
 
     runtime = commands.add_parser("runtime", help="inspect launch compatibility")
     runtime_commands = runtime.add_subparsers(dest="runtime_command", required=True)
@@ -110,18 +120,38 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     if arguments.command == "data" and arguments.data_command == "prepare":
-        manifest = DatasetManifest.load(arguments.config)
-        prepared = prepare_dataset(manifest, arguments.root)
-        _print_json(
-            {
+        manifest = load_data_manifest(arguments.config)
+        if type(manifest) is DatasetManifest:
+            prepared = prepare_dataset(manifest, arguments.root)
+            result: dict[str, object] = {
                 "status": "prepared",
                 "publication_eligible": False,
+                "kind": "episode_store",
                 "root": str(prepared.root),
                 "episode_count": len(prepared.episodes),
                 "dataset_manifest_sha256": prepared.manifest_sha256,
                 "content_sha256": prepared.content_sha256,
             }
-        )
+        elif type(manifest) is Subjects200KManifest:
+            snapshot = prepare_subjects200k_snapshot(
+                manifest,
+                arguments.root,
+                offline=arguments.offline,
+            )
+            result = {
+                "status": "prepared",
+                "publication_eligible": False,
+                "kind": "immutable_snapshot",
+                "root": str(snapshot.root),
+                "repository_id": snapshot.repository_id,
+                "revision": snapshot.revision,
+                "shard_count": snapshot.shard_count,
+                "total_bytes": snapshot.total_bytes,
+                "dataset_manifest_sha256": snapshot.manifest_sha256,
+            }
+        else:
+            raise AssertionError("unsupported validated data manifest")
+        _print_json(result)
         return 0
     if arguments.command == "runtime" and arguments.runtime_command == "preflight":
         runtime, ranks, compatible = _runtime(arguments.device)

@@ -1,0 +1,122 @@
+schema_version: memx-subjects200k-snapshot-v1
+name: subjects200k
+profile: training
+repository_id: Yuanshi/Subjects200K
+revision: 0d1cf6536239888f1a8e218790649344810067bc
+config_name: default
+split: train
+license_spdx: Apache-2.0
+expected_total_bytes: 10553550156
+shards:
+  - path: data/train-00000-of-00032.parquet
+    sha256: 3d696ccbdfc736961e75e5b7ce33adae40cd70ffb69cdc27020a25d643971903
+    size_bytes: 429744278
+  - path: data/train-00001-of-00032.parquet
+    sha256: 77a9668f428a325bec634f598b05f8dcb070e96f4e46cc52e67ddc4ff8036ed1
+    size_bytes: 416898125
+  - path: data/train-00002-of-00032.parquet
+    sha256: 21b44853030f1f579c7c4610f4cc5f6c46aa1c6845bcb547fb540df45465c520
+    size_bytes: 396228451
+  - path: data/train-00003-of-00032.parquet
+    sha256: 56fb75e9b9151e4867b6f4befa4ba72c8f389fdbf6db1eaa54f877cbbc6fa43c
+    size_bytes: 327659253
+  - path: data/train-00004-of-00032.parquet
+    sha256: 3ecf06e42909052e45d810df5ea5ae2e24f2effffbf12a69431ec93edad83a7d
+    size_bytes: 320500844
+  - path: data/train-00005-of-00032.parquet
+    sha256: 3b1ed2ab47a6ae979c15e191ec2e34511af1b8934ec28157bac3e19cd127eaa4
+    size_bytes: 297347403
+  - path: data/train-00006-of-00032.parquet
+    sha256: 448d2d1cdf21d4e9076d249fa8c9150bdd33106398ef1babef0b941d89370008
+    size_bytes: 351772926
+  - path: data/train-00007-of-00032.parquet
+    sha256: 96fd6bb5d39fd40d97e19bd8ba026b3f23b0475ae920719ab554e0811cfcb3cf
+    size_bytes: 272156953
+  - path: data/train-00008-of-00032.parquet
+    sha256: 9763c5cc1edc2028a78e3a456b7d7627440b455169b1d5a2b82ca1a101a04877
+    size_bytes: 355187580
+  - path: data/train-00009-of-00032.parquet
+    sha256: fba4a6a3f5e1182820ec9e6fed197028caa1e547143cd5022ab1aacbbf166068
+    size_bytes: 310651278
+  - path: data/train-00010-of-00032.parquet
+    sha256: f5ea91a26196286fccb9f2847b4726a7c3fa9cc21ab722b3e43c73d0cfccdae7
+    size_bytes: 326113375
+  - path: data/train-00011-of-00032.parquet
+    sha256: 6361489c0ba96cd518107de0797c38724c466e8be6e164340abb0fae8ceaa56c
+    size_bytes: 303444899
+  - path: data/train-00012-of-00032.parquet
+    sha256: b9024ce8c490c87c6df006e27760878445ca5b1f18a968160cbd01ac59830742
+    size_bytes: 348358817
+  - path: data/train-00013-of-00032.parquet
+    sha256: 53fab22610fe04c953dab0946a3ecf4bc97a9ac7f7956ab3e32ed66544a15572
+    size_bytes: 279846638
+  - path: data/train-00014-of-00032.parquet
+    sha256: 46f7154cc9fb27ad80df717cc3e3c5203f4e2c228a5247072fd2f71987eb2682
+    size_bytes: 370554951
+  - path: data/train-00015-of-00032.parquet
+    sha256: 57853171486071ed6d710589cf861f656678396bd583b3138c609764616308fe
+    size_bytes: 310508256
+  - path: data/train-00016-of-00032.parquet
+    sha256: d446ad54d54db8083cdc2019afed1c4d43b0ce784b8df8c6ee2a39df9f0b7687
+    size_bytes: 323027641
+  - path: data/train-00017-of-00032.parquet
+    sha256: 5994a6ffb2081417ff34161f6ff0a2ad0df07453d46f0363d694e577e97a9a15
+    size_bytes: 319982571
+  - path: data/train-00018-of-00032.parquet
+    sha256: 8d2f96ba71eb06d0363a4a9ec25b4e16160c03b85e3327c7926d93664e850b60
+    size_bytes: 318595770
+  - path: data/train-00019-of-00032.parquet
+    sha256: 1a9a2380b597e7e613a9f88c26913418be0322530b17b3ec3d8fd55897172f34
+    size_bytes: 301024136
+  - path: data/train-00020-of-00032.parquet
+    sha256: 18be4e30c57d8753047296909b8f6214fa9b331e9c2b20668a996043d4996fb1
+    size_bytes: 369136401
+  - path: data/train-00021-of-00032.parquet
+    sha256: 207bc7490f940346e236af771eb964e07b521946f9a5870dbf5d4eec856f887f
+    size_bytes: 304235916
+  - path: data/train-00022-of-00032.parquet
+    sha256: 0c8bcce72b34dbe9d4d8e534903e27d62dfa22d7150583f1b2ad5d3e47ca5aca
+    size_bytes: 306508810
+  - path: data/train-00023-of-00032.parquet
+    sha256: fdc930a34cb23294f075b98fc31ed33d944d91ad2fa01f2dff1062672570cb57
+    size_bytes: 343855124
+  - path: data/train-00024-of-00032.parquet
+    sha256: 1146c56890a1c3f140a373ce1d39164fa807a963eccb0b29b0e824f434012608
+    size_bytes: 290979198
+  - path: data/train-00025-of-00032.parquet
+    sha256: 6e3315adb23033f32356a87227f13f2ccbe3896a92e1bc6bd7c477097cc2d707
+    size_bytes: 303754432
+  - path: data/train-00026-of-00032.parquet
+    sha256: 44e58090f0f214ab1c84483e1a960493dc798f1a8ab904b55dde7b6eb2e9a8da
+    size_bytes: 367562652
+  - path: data/train-00027-of-00032.parquet
+    sha256: 41b5e4a037ee11fecd95bc1750fe60df1a8a63b633dfdcd0671c91e27cade6e0
+    size_bytes: 307973169
+  - path: data/train-00028-of-00032.parquet
+    sha256: 6aaa84c46eb59be8649d540fd5a37499c098900561fba7bd01dbf244dcc094f4
+    size_bytes: 301111238
+  - path: data/train-00029-of-00032.parquet
+    sha256: cbfa0a272b5761a8580ac770774443606c84cf0af3b244892388cdd913b5a7ff
+    size_bytes: 363296844
+  - path: data/train-00030-of-00032.parquet
+    sha256: 4d28e9d722daed86daabdb633fb8be2681c9c08e218c09f76fa8de7edc7022f6
+    size_bytes: 281225798
+  - path: data/train-00031-of-00032.parquet
+    sha256: 1617627edd98a825fb2cbd14cada55c238bb6dac8454c9d980ca42d10b17ec66
+    size_bytes: 334306429
+composite_pair:
+  mode: RGB
+  width: 1056
+  height: 528
+  image_size: 512
+  support_crop: [8, 8, 520, 520]
+  query_crop: [528, 8, 1040, 520]
+  concept_field: item
+  support_prompt_field: description_0
+  query_prompt_field: description_1
+  validity_field: description_valid
+partition:
+  algorithm: sha256_concept_identity_mod_10000
+  seed: 20260830
+  train_upper_bound: 9000
+  validation_upper_bound: 10000
