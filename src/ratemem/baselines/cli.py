@@ -132,6 +132,42 @@ def schema_source_inventory(
     typer.echo(f"PASS source-inventory schema: {output}")
 
 
+@schema_app.command("fidelity-report")
+def schema_fidelity_report(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the algorithmic fidelity report schema."""
+
+    from ratemem.baselines.fidelity import FidelityReport
+
+    write_json_atomic(output, FidelityReport.model_json_schema())
+    typer.echo(f"PASS fidelity-report schema: {output}")
+
+
+@schema_app.command("audit-receipt")
+def schema_audit_receipt(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the fail-closed baseline fidelity audit schema."""
+
+    from ratemem.baselines.fidelity import BaselineFidelityAuditReceipt
+
+    write_json_atomic(output, BaselineFidelityAuditReceipt.model_json_schema())
+    typer.echo(f"PASS baseline-audit receipt schema: {output}")
+
+
+@schema_app.command("search-ledger")
+def schema_search_ledger(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the validation-only baseline search-ledger schema."""
+
+    from ratemem.baselines.fidelity import SearchLedger
+
+    write_json_atomic(output, SearchLedger.model_json_schema())
+    typer.echo(f"PASS search-ledger schema: {output}")
+
+
 @source_app.command("resolve")
 def resolve_sources(
     registry: Annotated[Path, typer.Option("--registry")],

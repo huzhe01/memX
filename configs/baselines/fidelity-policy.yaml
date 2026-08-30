@@ -1,0 +1,41 @@
+schema_version: "1.0"
+reports_are_algorithmic_contracts_not_published_metric_reproductions: true
+common_required_cases:
+  - {id: canonical_state_roundtrip, comparator: sha256_exact}
+  - {id: event_receipt_identity, comparator: sha256_exact}
+  - {id: exact_byte_budget_random_trace, comparator: boolean_true}
+  - {id: probe_no_mutation, comparator: sha256_exact}
+  - {id: causal_future_denial, comparator: exception_type_exact}
+method_cases:
+  independent_fifo: [{id: locked_fifo_victim, comparator: value_exact}]
+  independent_lru: [{id: locked_lru_victim, comparator: value_exact}]
+  independent_lrua: [{id: locked_lrua_decay_and_victim, comparator: float64_allclose, atol: 1.0e-12, rtol: 1.0e-12}]
+  private_progressive_size_aware: [{id: prefix_and_size_action, comparator: value_exact}]
+  private_progressive_separable_rate: [{id: exact_small_knapsack, comparator: value_exact}]
+  shared_packet_plain_greedy: [{id: locked_density_order, comparator: value_exact}]
+  cts_style_static: [{id: paper_formula_matrix_fixture, comparator: float32_allclose, atol: 1.0e-6, rtol: 1.0e-6}]
+  vb_lora_style_static: [{id: vector_bank_topk_fixture, comparator: float32_allclose, atol: 1.0e-6, rtol: 1.0e-6}]
+  share_style_online:
+    - {id: upstream_matrix_update_fixture, comparator: float32_allclose, atol: 1.0e-6, rtol: 1.0e-6}
+    - {id: reprojection_drift_fixture, comparator: float32_allclose, atol: 1.0e-6, rtol: 1.0e-6}
+  dreamcache_feature_cache:
+    - {id: upstream_preprocessed_feature, comparator: float32_allclose, atol: 1.0e-5, rtol: 1.0e-5}
+    - {id: pinned_backbone_one_step_latent, comparator: bf16_allclose, atol: 0.02, rtol: 0.02}
+    - {id: feature_tap_and_injection_paths, comparator: value_exact}
+  per_concept_lora:
+    - {id: peft_dense_delta_equivalence, comparator: float32_allclose, atol: 1.0e-5, rtol: 1.0e-5}
+    - {id: frozen_backbone_hash, comparator: sha256_exact}
+  hyperlora_upstream: [{id: upstream_portrait_coefficient_fixture, comparator: float32_allclose, atol: 1.0e-5, rtol: 1.0e-5}]
+sana_primary_required_methods:
+  - independent_fifo
+  - independent_lru
+  - independent_lrua
+  - private_progressive_size_aware
+  - private_progressive_separable_rate
+  - shared_packet_plain_greedy
+  - cts_style_static
+  - vb_lora_style_static
+  - share_style_online
+  - dreamcache_feature_cache
+  - per_concept_lora
+allowed_statuses: [faithful, incompatible, failed]

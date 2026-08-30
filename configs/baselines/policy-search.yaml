@@ -1,0 +1,23 @@
+schema_version: "1.0"
+split: validation
+primary_backbone: sana_1_5_1_6b
+contextual_backbones_are_not_search_candidates: true
+maximum_trials_per_method: 24
+maximum_gpu_hours_per_method: 48.0
+failed_trials_consume_budget: true
+selector:
+  endpoint: request_weighted_identity
+  prompt_constraint_source: evaluation_lock
+  tie_break: [lower_online_bytes, lower_insert_latency, method_id]
+spaces:
+  independent_fifo: {controller: [fifo]}
+  independent_lru: {controller: [lru]}
+  independent_lrua: {decay: [0.9, 0.95, 0.99, 0.995]}
+  private_progressive_size_aware: {base_bits: [2, 4], packet_bits: [2, 4, 8], outer_policy: [fifo, lru], maximum_prefix: [2, 4]}
+  private_progressive_separable_rate: {base_bits: [2, 4], packet_bits: [2, 4, 8], maximum_prefix: [2, 4, 8], request_weight_window: [16]}
+  shared_packet_plain_greedy: {base_bits: [2, 4], packet_bits: [2, 4, 8], maximum_incidences: [2, 4, 8], request_weight_window: [16]}
+  cts_style_static: {rank: [4, 8, 16, 32], coefficient_bits: [4, 8, 16], outer_policy: [fifo, lru]}
+  vb_lora_style_static: {bank_size: [64, 128, 256], top_k: [1, 2, 4, 8], weight_bits: [4, 8]}
+  share_style_online: {rank: [4, 8, 16, 32], coefficient_bits: [4, 8, 16], outer_policy: [fifo, lru]}
+  dreamcache_feature_cache: {cache_dtype: [float16, bfloat16], controller: [fifo, lru], injection_scale: [0.5, 1.0, 1.5]}
+  per_concept_lora: {config_path: [configs/baselines/lora-reference.yaml]}
