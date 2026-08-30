@@ -70,6 +70,18 @@ def schema_static_codebook(output: Annotated[Path, typer.Option("--output")]) ->
     typer.echo(f"PASS static-codebook schema: {output}")
 
 
+@schema_app.command("oracle-certificate")
+def schema_oracle_certificate(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the exact future-oracle certificate schema."""
+
+    from ratemem.baselines.oracles import OracleCertificate
+
+    write_json_atomic(output, OracleCertificate.model_json_schema())
+    typer.echo(f"PASS oracle-certificate schema: {output}")
+
+
 def main() -> None:
     app()
 
