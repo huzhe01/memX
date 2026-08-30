@@ -34,7 +34,7 @@
 - Create: `src/ratemem/runtime/device.py`
 - Create: `tests/unit/runtime/test_device.py`
 
-- [ ] **Step 1: Write the failing runtime tests**
+- [x] **Step 1: Write the failing runtime tests**
 
 ```python
 from ratemem.runtime.device import RuntimeProbe, resolve_runtime
@@ -55,13 +55,13 @@ def test_missing_ppu_never_falls_back_to_cpu() -> None:
         resolve_runtime("ppu", RuntimeProbe(False, 0, (), False, ("gloo",)))
 ```
 
-- [ ] **Step 2: Verify the tests fail for the missing package**
+- [x] **Step 2: Verify the tests fail for the missing package**
 
 Run: `uv run pytest tests/unit/runtime/test_device.py -q`
 
 Expected: collection fails with `ModuleNotFoundError: No module named 'ratemem.runtime'`.
 
-- [ ] **Step 3: Implement the immutable resolver**
+- [x] **Step 3: Implement the immutable resolver**
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -102,13 +102,13 @@ def resolve_runtime(requested: str, probe: RuntimeProbe, *, backend_override: st
     )
 ```
 
-- [ ] **Step 4: Run the focused runtime suite**
+- [x] **Step 4: Run the focused runtime suite**
 
 Run: `uv run pytest tests/unit/runtime/test_device.py -q`
 
 Expected: all runtime tests pass.
 
-- [ ] **Step 5: Commit the runtime resolver**
+- [x] **Step 5: Commit the runtime resolver**
 
 ```bash
 git add src/ratemem/runtime tests/unit/runtime
