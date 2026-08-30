@@ -116,3 +116,20 @@ The checked-in smoke profile is an orchestration test and always records
 configurations, datasets, matched baselines, three training seeds, lifecycle replay, and statistical
 release. Until this runbook is executed on 真实 ZW810E hardware, the repository must say the PPU
 gates are 尚未验证.
+
+## 8. Local release-one verification receipt
+
+The provider-neutral release-one surface was verified on CPU on 2026-08-30. The following gates
+completed from a clean temporary data/run root:
+
+- `make bootstrap DEVICE=cpu` returned a passed Gloo preflight receipt.
+- `make data`, `make smoke`, `make evaluate`, and `make report` completed in sequence.
+- The deterministic fixture produced model SHA-256
+  `262fdac1d6c77f79aba3f67dc6625787fba13cc32fd91ea9da665154ad33c5fb` and retained
+  `publication_eligible=false`.
+- Ruff passed, mypy reported no issues in 55 source files, and pytest reported
+  `1829 passed, 1 skipped, 6 deselected`.
+- Bash syntax, the frozen uv lock, Git whitespace, and a 123-file credential scan passed.
+
+This receipt covers orchestration only. No PPU-ZW810E, PCCL, throughput, memory, BF16 numerical,
+multi-node, scientific dataset, baseline, or publication-result gate was executed locally.

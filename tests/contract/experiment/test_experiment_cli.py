@@ -1,3 +1,5 @@
+"""Contract tests for the public memX experiment CLI."""
+
 from __future__ import annotations
 
 import json

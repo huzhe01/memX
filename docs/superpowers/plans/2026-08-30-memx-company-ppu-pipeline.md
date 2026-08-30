@@ -594,7 +594,7 @@ git commit -m "docs: add clone-to-run ppu workflow"
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-30-memx-company-ppu-pipeline.md`
 
-- [ ] **Step 1: Execute the offline acceptance path in a temporary root**
+- [x] **Step 1: Execute the offline acceptance path in a temporary root**
 
 ```bash
 make data PROFILE=smoke DATA_ROOT="$(mktemp -d)"
@@ -605,7 +605,7 @@ make report RUN_ROOT="<same-run-root>"
 
 Expected: every command exits zero and the report is marked `publication_eligible=false`.
 
-- [ ] **Step 2: Run all local quality gates**
+- [x] **Step 2: Run all local quality gates**
 
 ```bash
 uv sync --all-extras --frozen
@@ -618,12 +618,12 @@ git diff --check
 
 Expected: every command exits zero; the pre-existing skip remains explicit.
 
-- [ ] **Step 3: Record unobserved hardware gates truthfully**
+- [x] **Step 3: Record unobserved hardware gates truthfully**
 
 Mark the CPU acceptance items complete. Leave single-, eight-, and sixteen-PPU receipts absent and
 state in the runbook that they require execution on company ZW810E hardware.
 
-- [ ] **Step 4: Commit verification documentation**
+- [x] **Step 4: Commit verification documentation**
 
 ```bash
 git add docs/superpowers/plans/2026-08-30-memx-company-ppu-pipeline.md docs/runbooks/company-ppu.md
