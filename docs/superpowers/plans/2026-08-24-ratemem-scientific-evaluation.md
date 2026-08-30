@@ -60,6 +60,11 @@ The engineering-pilot authorization is not a scientific-compute authorization. S
 
 ### Task 1: Establish canonical scientific records and the CLI
 
+> Execution note (2026-08-30): the repository dependency lock had already advanced beyond the
+> versions in this August 24 draft. This task preserved the verified shared pins (including Torch
+> 2.13.0, Pillow 12.3.0, safetensors 0.8.0, and jsonschema 4.26.0) and added only compatible
+> scientific dependencies; it did not downgrade the working SANA/company runtime.
+
 **Files:**
 - Modify: `pyproject.toml`
 - Modify: `uv.lock`
@@ -69,13 +74,13 @@ The engineering-pilot authorization is not a scientific-compute authorization. S
 - Create: `src/ratemem/evaluation/cli.py`
 - Test: `tests/unit/evaluation/test_canonical.py`
 
-- [ ] **Step 1: Verify the completed core and SANA/pilot scaffold**
+- [x] **Step 1: Verify the completed core and SANA/pilot scaffold**
 
 Run: `sed -n '1,260p' pyproject.toml && uv tree --depth 1 && uv run ratemem --help && uv run ratemem-pilot --help`
 
 Expected: exit 0; Python is constrained to 3.11; the existing graph includes core `cbor2`, NumPy, Pydantic, and PyYAML plus the pinned SANA/pilot stack; both `ratemem` and `ratemem-pilot` scripts work. Stop if either predecessor is incomplete rather than recreating its files or package smoke tests.
 
-- [ ] **Step 2: Add the pinned scientific dependencies and console script**
+- [x] **Step 2: Add the pinned scientific dependencies and console script**
 
 Extend the pilot plan's existing Python 3.11/`uv` `pyproject.toml` and `uv.lock`; add this extra and entry point without replacing existing project metadata, dependency pins, scripts, or extras:
 
@@ -106,7 +111,7 @@ Run: `uv lock && uv sync --all-extras --frozen`
 
 Expected: exit 0 and `uv run ratemem-eval --help` lists the root command after Step 5.
 
-- [ ] **Step 3: Write the failing canonicalization tests**
+- [x] **Step 3: Write the failing canonicalization tests**
 
 ```python
 # tests/unit/evaluation/test_canonical.py
@@ -152,13 +157,13 @@ def test_named_string_aliases_enforce_their_exact_patterns() -> None:
         TypeAdapter(Sha256).validate_python("not-a-hash")
 ```
 
-- [ ] **Step 4: Run the canonicalization tests and verify the expected failure**
+- [x] **Step 4: Run the canonicalization tests and verify the expected failure**
 
 Run: `uv run pytest tests/unit/evaluation/test_canonical.py -q`
 
 Expected: collection fails with `ModuleNotFoundError: No module named 'ratemem.evaluation'`.
 
-- [ ] **Step 5: Implement named constrained-string aliases, canonical writes, hashes, and the Typer root**
+- [x] **Step 5: Implement named constrained-string aliases, canonical writes, hashes, and the Typer root**
 
 ```python
 # src/ratemem/evaluation/types.py
@@ -249,13 +254,13 @@ def main() -> None:
 
 Export only stable public types from `src/ratemem/evaluation/__init__.py`; begin with `__all__: list[str] = []`.
 
-- [ ] **Step 6: Run the focused test and static checks**
+- [x] **Step 6: Run the focused test and static checks**
 
 Run: `uv run pytest tests/unit/evaluation/test_canonical.py -q && uv run ruff check src/ratemem/evaluation tests/unit/evaluation && uv run mypy src/ratemem/evaluation`
 
 Expected: `6 passed`, followed by Ruff and mypy exit 0.
 
-- [ ] **Step 7: Commit the canonical layer**
+- [x] **Step 7: Commit the canonical layer**
 
 ```bash
 git add pyproject.toml uv.lock src/ratemem/evaluation tests/unit/evaluation/test_canonical.py
