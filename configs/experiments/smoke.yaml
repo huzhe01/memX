@@ -1,0 +1,10 @@
+schema_version: memx-experiment-v1
+profile: smoke
+seed: 20260830
+max_steps: 6
+batch_size: 2
+gradient_accumulation: 1
+learning_rate: 0.01
+checkpoint_every: 2
+precision: fp32
+dataset_manifest: configs/data/smoke.yaml

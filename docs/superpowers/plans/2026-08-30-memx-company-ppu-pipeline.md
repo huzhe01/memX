@@ -321,7 +321,7 @@ git commit -m "feat: add deterministic dataset preparation"
 - Create: `tests/unit/experiment/test_config.py`
 - Create: `tests/unit/experiment/test_checkpoint.py`
 
-- [ ] **Step 1: Write failing config and checkpoint tests**
+- [x] **Step 1: Write failing config and checkpoint tests**
 
 ```python
 def test_config_hash_changes_when_training_steps_change() -> None:
@@ -336,13 +336,13 @@ def test_incomplete_checkpoint_is_not_latest(tmp_path: Path) -> None:
     assert store.latest() is None
 ```
 
-- [ ] **Step 2: Run and observe missing experiment package failures**
+- [x] **Step 2: Run and observe missing experiment package failures**
 
 Run: `uv run pytest tests/unit/experiment/test_config.py tests/unit/experiment/test_checkpoint.py -q`
 
 Expected: collection fails for `ratemem.experiment`.
 
-- [ ] **Step 3: Implement strict configuration**
+- [x] **Step 3: Implement strict configuration**
 
 ```python
 class ExperimentConfig(BaseModel):
@@ -365,7 +365,7 @@ class ExperimentConfig(BaseModel):
         return hashlib.sha256(payload).hexdigest()
 ```
 
-- [ ] **Step 4: Implement atomic checkpoint directories**
+- [x] **Step 4: Implement atomic checkpoint directories**
 
 ```python
 class CheckpointStore:
@@ -389,13 +389,13 @@ class CheckpointStore:
 # renames to `step-00000004`, then atomically replaces `latest.json`.
 ```
 
-- [ ] **Step 5: Verify corruption, config mismatch, and exact resume behavior**
+- [x] **Step 5: Verify corruption, config mismatch, and exact resume behavior**
 
 Run: `uv run pytest tests/unit/experiment/test_config.py tests/unit/experiment/test_checkpoint.py -q`
 
 Expected: all focused tests pass.
 
-- [ ] **Step 6: Commit configuration and resume storage**
+- [x] **Step 6: Commit configuration and resume storage**
 
 ```bash
 git add src/ratemem/experiment configs/experiments tests/unit/experiment
