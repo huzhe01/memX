@@ -11,14 +11,27 @@ from typing import Annotated, Literal, Never, cast
 
 import typer
 import yaml  # type: ignore[import-untyped]
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 
-from ratemem.evaluation.canonical import semantic_sha256, write_json_atomic
+from ratemem.evaluation.canonical import (
+    canonical_json_bytes,
+    semantic_sha256,
+    write_json_atomic,
+)
 from ratemem.evaluation.dataset_lock import (
     DatasetLock,
     DatasetLockError,
     load_inventory,
     seal_dataset_lock,
     write_dataset_lock_and_card,
+)
+from ratemem.evaluation.final_trace import (
+    FinalEvaluationPermit,
+    FinalTraceEnvelope,
+    FinalTracePublicManifest,
+    generate_x25519_keypair,
+    seal_final_trace,
 )
 from ratemem.evaluation.leakage import (
     DuplicateAuditReport,
@@ -73,6 +86,37 @@ def _pools_blocked(message: str) -> Never:
 def _duplicate_blocked(message: str) -> Never:
     typer.echo(f"BLOCKED duplicate-audit: {message}", err=True)
     raise typer.Exit(code=2)
+
+
+def _final_trace_blocked(message: str) -> Never:
+    typer.echo(f"BLOCKED final-trace: {message}", err=True)
+    raise typer.Exit(code=2)
+
+
+def _write_new_file(path: Path, payload: bytes, mode: int) -> None:
+    """Create one immutable artifact without following or replacing an existing path."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, mode)
+    try:
+        stream = os.fdopen(descriptor, "wb")
+        descriptor = -1
+        with stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(path, mode)
+        directory_descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 @data_app.command("schema")
@@ -249,6 +293,156 @@ def trace_schema(
 
     write_json_atomic(output, TraceManifest.model_json_schema())
     typer.echo(f"PASS trace-manifest schema: {output}")
+
+
+@traces_app.command("envelope-schema")
+def final_trace_envelope_schema(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the exact schema for the public encrypted final-trace envelope."""
+
+    write_json_atomic(output, FinalTraceEnvelope.model_json_schema())
+    typer.echo(f"PASS final-trace envelope schema: {output}")
+
+
+@traces_app.command("freeze-schema")
+def final_evaluation_freeze_schema(
+    output: Annotated[Path, typer.Option("--output")],
+) -> None:
+    """Write the exact schema for a signed final-evaluation permit."""
+
+    write_json_atomic(output, FinalEvaluationPermit.model_json_schema())
+    typer.echo(f"PASS final-evaluation freeze schema: {output}")
+
+
+@traces_app.command("keygen")
+def final_trace_keygen(
+    private_key: Annotated[Path, typer.Option("--private-key")],
+    public_key: Annotated[Path, typer.Option("--public-key")],
+) -> None:
+    """Generate a final-trace recipient keypair without printing key material."""
+
+    if private_key == public_key:
+        _final_trace_blocked("private and public key paths must differ")
+    if any(path.exists() or path.is_symlink() for path in (private_key, public_key)):
+        _final_trace_blocked("key output path already exists")
+    created: list[Path] = []
+    try:
+        recipient_private, recipient_public = generate_x25519_keypair()
+        private_payload = recipient_private.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        public_payload = recipient_public.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        _write_new_file(private_key, private_payload, 0o600)
+        created.append(private_key)
+        _write_new_file(public_key, public_payload, 0o644)
+        created.append(public_key)
+    except (OSError, TypeError, ValueError) as error:
+        for path in created:
+            path.unlink(missing_ok=True)
+        _final_trace_blocked(str(error))
+    typer.echo("PASS final-trace keypair generated: private-key-disclosed=false")
+
+
+@traces_app.command("seal-final")
+def seal_final_trace_command(
+    dataset_lock: Annotated[Path, typer.Option("--dataset-lock")],
+    policy: Annotated[Path, typer.Option("--policy")],
+    power_record: Annotated[Path, typer.Option("--power-record")],
+    recipient: Annotated[Path, typer.Option("--recipient")],
+    manifest_output: Annotated[Path, typer.Option("--manifest-output")],
+    envelope_output: Annotated[Path, typer.Option("--envelope-output")],
+    concept_pools: Annotated[
+        Path,
+        typer.Option("--concept-pools"),
+    ] = Path("artifacts/scientific/dataset-audit/concept-pools.json"),
+) -> None:
+    """Build a final trace in memory and publish only its manifest and envelope."""
+
+    outputs = (manifest_output, envelope_output)
+    if manifest_output == envelope_output:
+        _final_trace_blocked("manifest and envelope output paths must differ")
+    if any(path.exists() or path.is_symlink() for path in outputs):
+        _final_trace_blocked("output path already exists")
+    created: list[Path] = []
+    try:
+        lock_payload = yaml.safe_load(dataset_lock.read_text(encoding="utf-8"))
+        locked_dataset = DatasetLock.model_validate(lock_payload)
+        if semantic_sha256(locked_dataset.model_dump(mode="json")) != locked_dataset.lock_id:
+            raise ValueError("dataset lock content hash changed")
+        required = RequiredUnits.model_validate_json(
+            power_record.read_text(encoding="utf-8")
+        )
+        if hashlib.sha256(required.semantic_bytes).hexdigest() != required.record_sha256:
+            raise ValueError("required-unit record content hash changed")
+        all_pools = AllPools.load(concept_pools)
+        if all_pools.dataset_lock_id != locked_dataset.lock_id:
+            raise ValueError("concept pools do not bind the selected dataset lock")
+        trace_policy = TracePolicy.load(policy)
+        loaded_recipient = serialization.load_pem_public_key(recipient.read_bytes())
+        if not isinstance(loaded_recipient, X25519PublicKey):
+            raise TypeError("recipient must contain an X25519 public key")
+
+        count = required.required_units
+        final_set = build_trace_set(
+            all_pools,
+            trace_policy,
+            counts={"train": count, "validation": count, "final_test": count},
+            event_count=trace_policy.events_per_deployment_episode,
+        )["final_test"]
+        plaintext = b"".join(
+            canonical_json_bytes(
+                {
+                    "trace_id": trace.trace_id,
+                    "event": event.model_dump(mode="json"),
+                }
+            )
+            + b"\n"
+            for trace in sorted(final_set.traces, key=lambda item: item.trace_id)
+            for event in trace.events
+        )
+        final_pool = all_pools.for_split("final_test")
+        public_manifest = FinalTracePublicManifest(
+            dataset_lock_id=locked_dataset.lock_id,
+            trace_builder_revision=trace_policy.builder_revision,
+            trace_policy_sha256=hashlib.sha256(policy.read_bytes()).hexdigest(),
+            power_record_sha256=required.record_sha256,
+            concept_pool_sha256=final_pool.concept_pool_sha256,
+            prompt_pool_sha256=final_pool.prompt_pool_sha256,
+            trace_ids=final_set.trace_ids,
+            generation_seeds=final_set.generation_seeds,
+            trace_count=len(final_set.traces),
+            event_count=len(plaintext.splitlines()),
+            plaintext_sha256=hashlib.sha256(plaintext).hexdigest(),
+        )
+        manifest_bytes = (
+            canonical_json_bytes(public_manifest.model_dump(mode="json")) + b"\n"
+        )
+        envelope = seal_final_trace(
+            plaintext,
+            loaded_recipient,
+            associated_manifest=manifest_bytes,
+        )
+        _write_new_file(manifest_output, manifest_bytes, 0o644)
+        created.append(manifest_output)
+        _write_new_file(
+            envelope_output,
+            canonical_json_bytes(envelope.model_dump(mode="json")) + b"\n",
+            0o644,
+        )
+        created.append(envelope_output)
+    except (OSError, TypeError, ValueError) as error:
+        for path in created:
+            path.unlink(missing_ok=True)
+        _final_trace_blocked(str(error))
+    typer.echo(
+        f"PASS final-trace sealed: plaintext retained=false envelope={envelope.sha256}"
+    )
 
 
 @traces_app.command("build-visible")

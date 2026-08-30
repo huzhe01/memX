@@ -930,7 +930,7 @@ git commit -m "data: freeze development trace manifests"
 - Test: `tests/contract/evaluation/test_final_trace_access.py`
 - Test: `tests/integration/evaluation/test_final_trace_roundtrip.py`
 
-- [ ] **Step 1: Write failing encryption, access, and one-time-ledger tests**
+- [x] **Step 1: Write failing encryption, access, and one-time-ledger tests**
 
 ```python
 def test_final_trace_round_trip_requires_private_key_and_binds_manifest(tmp_path: Path) -> None:
@@ -956,13 +956,13 @@ def test_open_ledger_is_created_before_decryption_and_blocks_second_attempt(tmp_
     assert json.loads(ledger.read_text())["status"] == "opened"
 ```
 
-- [ ] **Step 2: Run the final-trace tests and verify failure**
+- [x] **Step 2: Run the final-trace tests and verify failure**
 
 Run: `uv run pytest tests/unit/evaluation/test_final_trace.py tests/contract/evaluation/test_final_trace_access.py -q`
 
 Expected: collection fails because `ratemem.evaluation.final_trace` does not exist.
 
-- [ ] **Step 3: Implement the versioned public-key envelope**
+- [x] **Step 3: Implement the versioned public-key envelope**
 
 Use X25519 ephemeral-static key exchange, HKDF-SHA256 with info `b"ratemem-final-trace-v1"`, and ChaCha20-Poly1305. Bind the canonical public manifest bytes as associated data. Define this serialized envelope:
 
@@ -982,7 +982,7 @@ Use X25519 ephemeral-static key exchange, HKDF-SHA256 with info `b"ratemem-final
 
 Implement `generate_x25519_keypair() -> tuple[X25519PrivateKey, X25519PublicKey]`, `seal_final_trace(plaintext: bytes, recipient: X25519PublicKey, associated_manifest: bytes) -> FinalTraceEnvelope`, and `open_final_trace(envelope: FinalTraceEnvelope, private_key: X25519PrivateKey, associated_manifest: bytes) -> BytesIO`. Plaintext final events may exist only in memory or a permission-restricted temporary file removed by the same sealing process; no API accepts a repository plaintext output path.
 
-- [ ] **Step 4: Implement signed freeze permits and atomic one-time opening**
+- [x] **Step 4: Implement signed freeze permits and atomic one-time opening**
 
 ```python
 from ratemem.evaluation.types import GitCommit, Sha256
@@ -1019,7 +1019,7 @@ class AccessPurpose(str, Enum):
 
 When `paid_compute=true`, permit validation also requires both scientific-compute hashes and Task 9's consumed one-phase launch receipt before any provider invocation. When `paid_compute=false`, both hashes must be absent. An engineering-pilot authorization hash is never accepted in either branch.
 
-- [ ] **Step 5: Add a contract test preventing training imports**
+- [x] **Step 5: Add a contract test preventing training imports**
 
 Walk the AST under `src/ratemem/training/` and fail if a module imports `ratemem.evaluation.final_trace`, references `AccessPurpose.FINAL_EVALUATION`, or opens a path containing `final-test-envelope`. Also assert `ratemem-eval traces build-visible --splits final_test` exits 2.
 
@@ -1027,7 +1027,7 @@ Run: `uv run pytest tests/unit/evaluation/test_final_trace.py tests/contract/eva
 
 Expected: all tests pass, including a failed second-open attempt.
 
-- [ ] **Step 6: Add key generation and final sealing commands**
+- [x] **Step 6: Add key generation and final sealing commands**
 
 Keep transient decrypted material out of Git by adding `artifacts/scientific/**/*.plaintext` and `artifacts/scientific/**/*.key` to `.gitignore`; final permits and opening ledgers remain publishable evidence. Generate the final-trace key outside the repository without echoing key material:
 

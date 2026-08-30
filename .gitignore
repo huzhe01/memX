@@ -7,9 +7,12 @@ __pycache__/
 /artifacts/
 data/cache/
 /data/memx/
+artifacts/scientific/**/*.plaintext
+artifacts/scientific/**/*.key
 .env
 .env.*
 *.pem
+!configs/scientific/traces/final-trace-recipient.pem
 *.key
 .modal.toml
 artifacts/pilot/
