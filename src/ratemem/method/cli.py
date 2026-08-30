@@ -8,6 +8,10 @@ from typing import Annotated
 import typer
 
 from ratemem.evaluation.canonical import write_json_atomic, write_yaml_atomic
+from ratemem.method.checkpoint import (
+    MethodCheckpointManifest,
+    inspect_method_checkpoint,
+)
 from ratemem.method.config import MethodLockInputs, MethodTrainingLock, freeze_method_lock
 
 app = typer.Typer(no_args_is_help=True, help="RateMem learned-method controls.")
@@ -19,6 +23,25 @@ def schema(output: Annotated[Path, typer.Option("--output")]) -> None:
 
     write_json_atomic(output, MethodTrainingLock.model_json_schema())
     typer.echo(f"PASS method-lock schema: {output}")
+
+
+@app.command("checkpoint-schema")
+def checkpoint_schema(output: Annotated[Path, typer.Option("--output")]) -> None:
+    """Write the strict learned-method checkpoint manifest schema."""
+
+    write_json_atomic(output, MethodCheckpointManifest.model_json_schema())
+    typer.echo(f"PASS method-checkpoint schema: {output}")
+
+
+@app.command("checkpoint-inspect")
+def checkpoint_inspect(directory: Annotated[Path, typer.Option("--directory")]) -> None:
+    """Verify a learned-method checkpoint without loading it into a model."""
+
+    manifest = inspect_method_checkpoint(directory)
+    typer.echo(
+        "PASS method-checkpoint: "
+        f"{manifest.tensor_sha256} dictionary={manifest.dictionary_revision_sha256}"
+    )
 
 
 @app.command("lock")
